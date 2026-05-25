@@ -827,8 +827,8 @@ def _build_listing(url: str, html: str) -> PropertyListing:
 
     # ── Assemble sub-models ───────────────────────────────────────────────────
     return PropertyListing(
+        source="zonaprop",
         url=url,
-        portal="zonaprop",
         external_id=ext_id,
         captured_at=datetime.now(_AR_TIMEZONE),
         listing=ListingInfo(
@@ -901,9 +901,9 @@ class ZonapropSource(BaseSource):
         log.info(
             "zonaprop.extract done url=%s precio=%s location=%s op=%s tipo=%s",
             url,
-            listing.precio,
+            listing.price.precio if listing.price else None,
             f"{listing.location.city}/{listing.location.neighborhood}" if listing.location else None,
-            listing.operation_type,
-            listing.tipo,
+            listing.listing.operation_type if listing.listing else None,
+            listing.property_info.tipo if listing.property_info else None,
         )
-        return listing.model_dump(by_alias=True, exclude={"url", "portal"})
+        return listing.model_dump(by_alias=True)

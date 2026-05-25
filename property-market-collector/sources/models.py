@@ -74,8 +74,8 @@ class SellerInfo(BaseModel):
 
 class PropertyListing(BaseModel):
     # ── Identidad ─────────────────────────────────────────────────────────────
+    source: str
     url: str
-    portal: str
     external_id: Optional[str] = None
     captured_at: Optional[datetime] = None
 

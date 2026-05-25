@@ -12,8 +12,6 @@ from .buscadorprop import BuscadorpropSource
 from .buscainmueble import BuscainmuebleSource
 from .clarin import ClarinSource
 from .doomos import DoomosSource
-from .models import PropertyListing
-
 _SOURCES = [
     ZonapropSource(),
     ArgenpropSource(),
@@ -45,9 +43,8 @@ _SOURCE_NAMES = [
 SUPPORTED_SOURCES = _SOURCE_NAMES
 
 
-async def extract(url: str, client: httpx.AsyncClient) -> PropertyListing:
-    for source, name in zip(_SOURCES, _SOURCE_NAMES):
+async def extract(url: str, client: httpx.AsyncClient) -> dict:
+    for source in _SOURCES:
         if source.can_handle(url):
-            data = await source.extract(url, client)
-            return PropertyListing(url=url, portal=name, **data)
+            return await source.extract(url, client)
     raise HTTPException(400, "No hay soporte de scraping para esta URL.")

@@ -7,7 +7,6 @@ from pydantic import BaseModel
 
 import sources
 from sources import browser as _browser_mod
-from sources.models import PropertyListing
 
 SERVICE_TOKEN = os.getenv("SERVICE_TOKEN", "")
 
@@ -45,7 +44,7 @@ def health():
     return {"status": "ok", "sources": sources.SUPPORTED_SOURCES}
 
 
-@app.post("/extract", response_model=PropertyListing)
+@app.post("/extract")
 async def extract(body: ExtractRequest, authorization: str = Header(default="")):
     if SERVICE_TOKEN and authorization != f"Bearer {SERVICE_TOKEN}":
         raise HTTPException(401, "Unauthorized")
