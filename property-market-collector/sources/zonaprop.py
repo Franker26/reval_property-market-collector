@@ -12,7 +12,10 @@ from fastapi import HTTPException
 
 from .base import BaseSource
 from . import browser as _browser
-from .models import Location, PropertyListing
+from .models import (
+    ListingInfo, LocationInfo, MediaInfo,
+    PriceInfo, PropertyInfo, PropertyListing, SellerInfo,
+)
 
 log = logging.getLogger(__name__)
 
@@ -95,10 +98,34 @@ def _clean_text(text: str) -> str:
 
 # ── HTML parsers ──────────────────────────────────────────────────────────────
 
+_TIER_MAP = {"1": "simple", "2": "destacado", "3": "superdestacado", "4": "free"}
+
+
+def _normalize_coord(value, *, is_lon: bool = False) -> Optional[float]:
+    """
+    Convert a raw coordinate value (float or int64) to decimal degrees.
+    Zonaprop stores coordinates as integers (e.g. -34603722 → -34.603722).
+    Tries divisors 10^7, 10^6, 10^5 until the result falls in a valid range.
+    """
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    max_abs = 180.0 if is_lon else 90.0
+    if abs(v) <= max_abs:
+        return round(v, 7)
+    for exp in (7, 6, 5):
+        candidate = v / (10 ** exp)
+        if abs(candidate) <= max_abs:
+            return round(candidate, 7)
+    return None
+
+
 def _parse_inline_script_vars(html: str) -> dict:
-    """Extract antiquity and usersViews from inline JS block."""
+    """Extract all inline JS vars from Zonaprop's server-rendered script blocks."""
     result: dict = {}
 
+    # ── Antiquity ─────────────────────────────────────────────────────────────
     m = re.search(r"const\s+antiquity\s*=\s*'([^']+)'", html)
     if m:
         text = m.group(1).strip()
@@ -125,7 +152,149 @@ def _parse_inline_script_vars(html: str) -> dict:
     if m:
         result["views_count"] = int(m.group(1))
 
+    # ── Posting type / status ─────────────────────────────────────────────────
+    m = re.search(r'postingType\s*=\s*"([^"]+)"', html)
+    if m and m.group(1):
+        result["posting_type"] = m.group(1)
+
+    m = re.search(r'postingStatus\s*=\s*"([^"]+)"', html)
+    if m:
+        result["posting_status"] = m.group(1)
+
+    # ── Publication tier ──────────────────────────────────────────────────────
+    # The tier map {'1':'simple','2':'destacado',...} is always in the HTML;
+    # we look for the variable that indexes it in the preceding context.
+    tier_map_m = re.search(r"'1'\s*:\s*'simple'", html)
+    if tier_map_m:
+        ctx = html[max(0, tier_map_m.start() - 400):tier_map_m.start()]
+        tier_m = re.search(r"tier\s*[=:]\s*[\"']?(\d)[\"']?", ctx)
+        if tier_m:
+            result["publication_tier"] = _TIER_MAP.get(tier_m.group(1))
+
+    # ── Publisher object ──────────────────────────────────────────────────────
+    pub_m = re.search(r'publisher\s*=\s*(\{[^\n]+\})', html)
+    if pub_m:
+        try:
+            pub = json.loads(pub_m.group(1))
+            result["seller_id"] = str(pub["publisherId"]) if pub.get("publisherId") else None
+            result["seller_license"] = pub.get("license") or None
+            result["seller_logo_url"] = pub.get("urlLogo") or None
+        except Exception:
+            pass
+
+    # ── Address visibility ────────────────────────────────────────────────────
+    vis_m = re.search(r'"visibility"\s*:\s*"(EXACT|APPROXIMATE|HIDDEN)"', html, re.I)
+    if vis_m:
+        result["address_visibility"] = vis_m.group(1).upper()
+
+    # ── Video / tour 360 ─────────────────────────────────────────────────────
+    result["has_video"] = bool(re.search(r'"videoUrl"\s*:\s*"https[^"]+"|const videos\s*=\s*\[.+\]', html))
+    result["has_tour_360"] = bool(re.search(r'tour360Url\s*=\s*"https[^"]+"|"tourUrl"\s*:\s*"https[^"]+"', html))
+
+    # ── Coordinates (Zonaprop stores as int64, e.g. -34603722 = -34.603722°) ─
+    lat_m = re.search(r'\blatitude\s*[=:]\s*["\']?(-?\d+(?:\.\d+)?)["\']?', html, re.I)
+    lon_m = re.search(r'\blongitude\s*[=:]\s*["\']?(-?\d+(?:\.\d+)?)["\']?', html, re.I)
+    if lat_m:
+        lat = _normalize_coord(lat_m.group(1), is_lon=False)
+        if lat is not None:
+            result["lat"] = lat
+    if lon_m:
+        lon = _normalize_coord(lon_m.group(1), is_lon=True)
+        if lon is not None:
+            result["lon"] = lon
+
     return result
+
+
+def _parse_pictures_count(html: str, external_id: Optional[str]) -> Optional[int]:
+    """
+    Count unique gallery images by matching imgar CDN paths for this posting.
+    The CDN path encodes the posting ID: avisos/1/00/XX/XX/XX/XX/<size>/<image_id>.jpg
+    We extract unique <image_id> values to get the real picture count.
+    """
+    if not external_id or len(external_id) < 6:
+        return None
+
+    # Build path segments from the external_id digits, grouped in pairs
+    digits = external_id.zfill(8)
+    path_segments = "/".join([digits[i:i+2] for i in range(0, 8, 2)])
+    pattern = rf"avisos/\d+/{path_segments}/[^/]+/(\d+)\.jpg"
+
+    image_ids = set(re.findall(pattern, html))
+    return len(image_ids) if image_ids else None
+
+
+def _parse_general_features(html: str) -> dict:
+    """
+    Parse the generalFeatures JS object into a flat features dict.
+
+    Structure: { "Section name": { featureId: { label, value, measure, icon } } }
+
+    Rules:
+      - value=None  → feature is present (boolean True)
+      - value="0"   → skip (explicitly absent)
+      - value=text  → include as string
+      - value=num   → include as number
+    Skip structural/area features already captured in dedicated fields
+    (superficies, ambientes, dormitorios, baños, antigüedad, orientación).
+    """
+    SKIP_ICONS = {"stotal", "scubierta", "ssemi", "ambiente", "bano", "dormitorio",
+                  "cochera", "antiguedad", "orientacion", "piso", "toilette", "garages"}
+
+    m = re.search(r"(?:const\s+)?generalFeatures\s*=\s*(\{)", html)
+    if not m:
+        return {}
+
+    start = m.start(1)
+    depth, end = 0, start
+    for i, ch in enumerate(html[start:], start):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+
+    try:
+        sections = json.loads(html[start:end])
+    except Exception:
+        return {}
+
+    features: dict = {}
+    for section_features in sections.values():
+        if not isinstance(section_features, dict):
+            continue
+        for feat in section_features.values():
+            if not isinstance(feat, dict):
+                continue
+            icon = feat.get("icon") or ""
+            if icon in SKIP_ICONS:
+                continue
+            label = feat.get("label", "").strip()
+            if not label:
+                continue
+            value = feat.get("value")
+            measure = feat.get("measure") or ""
+
+            # Normalise label to snake_case key
+            key = re.sub(r"\s+", "_", label.lower().strip())
+            key = re.sub(r"[^a-z0-9_áéíóúñü]", "", key)
+            key = re.sub(r"_+", "_", key).strip("_")
+
+            if value is None:
+                features[key] = True
+            elif str(value) == "0":
+                continue  # explicitly absent
+            else:
+                # Try numeric
+                try:
+                    num = float(str(value).replace(",", ".").replace(".", "", str(value).count(".") - 1))
+                    features[key] = int(num) if num == int(num) else num
+                except (ValueError, OverflowError):
+                    features[key] = f"{value} {measure}".strip() if measure else str(value)
+
+    return features
 
 
 def _parse_icon_features(soup: BeautifulSoup) -> dict:
@@ -478,30 +647,32 @@ def _parse_ldjson_property(soup: BeautifulSoup) -> dict:
             city: Optional[str] = None
             province: Optional[str] = None
 
-            # Last meaningful part is usually "Argentina"
             if loc_parts and loc_parts[-1].strip().lower() == "argentina":
                 country = "Argentina"
                 loc_parts = loc_parts[:-1]
 
-            # First remaining part = city
             if loc_parts:
                 city = loc_parts[0]
 
-            # Second remaining part = province/region (e.g. "GBA Oeste", "Capital Federal")
             if len(loc_parts) > 1:
                 province = loc_parts[1]
             elif city:
-                # CABA case: city == province
-                province = city
+                province = city  # CABA: city == province
 
-            result["location"] = Location(
-                country=country or "Argentina",
-                province=province,
-                city=city,
-                neighborhood=region or None,
-                lat=None,
-                lon=None,
-            )
+            result["country"] = country or "Argentina"
+            result["province"] = province
+            result["city"] = city
+            result["neighborhood"] = region or None
+
+        # coordinates from schema.org geo
+        geo = d.get("geo") or {}
+        if isinstance(geo, dict):
+            lat = _normalize_coord(geo.get("latitude"), is_lon=False)
+            lon = _normalize_coord(geo.get("longitude"), is_lon=True)
+            if lat is not None:
+                result["lat"] = lat
+            if lon is not None:
+                result["lon"] = lon
 
         break  # first property JSON-LD block is enough
 
@@ -534,6 +705,26 @@ def _find_listing_in_next_data(html: str) -> dict:
                 return c
 
     return {}
+
+
+def _extract_coords_from_next_data(listing: dict) -> tuple[Optional[float], Optional[float]]:
+    """
+    Extract lat/lon from __NEXT_DATA__ listing dict.
+    Handles both float degrees and int64 formats.
+    Returns (lat, lon) or (None, None).
+    """
+    for geo_key in ("geo", "location", "address", "coordinates", "geoLocation"):
+        geo = listing.get(geo_key)
+        if not isinstance(geo, dict):
+            continue
+        raw_lat = geo.get("lat") or geo.get("latitude")
+        raw_lon = geo.get("lon") or geo.get("longitude")
+        if raw_lat is not None and raw_lon is not None:
+            lat = _normalize_coord(raw_lat, is_lon=False)
+            lon = _normalize_coord(raw_lon, is_lon=True)
+            if lat is not None and lon is not None:
+                return lat, lon
+    return None, None
 
 
 def _extract_price_from_next_data(listing: dict) -> tuple[Optional[str], Optional[int]]:
@@ -574,16 +765,16 @@ def _extract_price_from_next_data(listing: dict) -> tuple[Optional[str], Optiona
 def _build_listing(url: str, html: str) -> PropertyListing:
     """
     Parse a Zonaprop property page HTML and return a PropertyListing.
-    Primary sources (in priority order):
-      1. JSON-LD schema.org  → title, description, location, bedrooms, bathrooms, direccion
+    Priority order per data point:
+      1. JSON-LD schema.org  → title, description, location (address + geo), bedrooms, bathrooms
       2. HTML price block    → operation_type, currency, precio
-      3. Icon feature list   → areas, ambientes, cochera, antiguedad, orientacion, piso
-      4. Inline JS vars      → dias_mercado
-      5. __NEXT_DATA__ JSON  → price supplement if HTML parse fails
+      3. Icon feature list   → surfaces, ambientes, cochera, antiguedad, orientacion, piso
+      4. Inline JS vars      → dias_mercado, posting metadata, seller ids, coords (int64), media flags
+      5. __NEXT_DATA__ JSON  → price & coords supplement if previous sources fail
     """
     soup = BeautifulSoup(html, "html.parser")
 
-    # 1. JSON-LD (most reliable for structured location + description)
+    # 1. JSON-LD
     ldjson = _parse_ldjson_property(soup)
 
     # 2. Price block
@@ -592,74 +783,107 @@ def _build_listing(url: str, html: str) -> PropertyListing:
     # 3. Icon features
     icons = _parse_icon_features(soup)
 
-    # 4. Inline JS vars (antiquity)
+    # 4. Inline JS vars (all metadata extracted in one pass)
     script_vars = _parse_inline_script_vars(html)
     days_ago = script_vars.get("published_days_ago")
     if days_ago is None:
         days_ago = _parse_published_days(soup)
 
-    # 5. __NEXT_DATA__ supplement for price
+    # 5. General features (amenities dict)
+    features = _parse_general_features(html)
+
+    # 6. Picture count: calculated from CDN URL patterns, not from API
+    ext_id = _external_id_from_url(url)
+    pictures_count = _parse_pictures_count(html, ext_id)
+
+    # 7. __NEXT_DATA__: supplement price and coords if missing
     listing_json = _find_listing_in_next_data(html)
     currency = price_data.get("currency")
     precio = price_data.get("precio")
     if not precio and listing_json:
         currency, precio = _extract_price_from_next_data(listing_json)
 
-    # Property type
-    tipo = _parse_property_type(soup)
+    # ── Coordinates: JSON-LD geo > inline JS int64 > __NEXT_DATA__ ────────────
+    lat = ldjson.get("lat") or script_vars.get("lat")
+    lon = ldjson.get("lon") or script_vars.get("lon")
+    if (lat is None or lon is None) and listing_json:
+        nd_lat, nd_lon = _extract_coords_from_next_data(listing_json)
+        lat = lat or nd_lat
+        lon = lon or nd_lon
 
-    # Title: h1 is the cleanest source (no city suffix, correct accents).
-    # JSON-LD name is fallback (it has "Title, City - Zonaprop" format).
+    # ── Title ────────────────────────────────────────────────────────────────
+    # h1 is cleanest (no city suffix). JSON-LD name is fallback.
     h1 = soup.find("h1")
     title = _clean_text(h1.get_text(" ", strip=True)) if h1 else ldjson.get("title")
 
-    # Description fallback: HTML scraping if JSON-LD didn't have it
+    # ── Description ──────────────────────────────────────────────────────────
     description = ldjson.get("description") or _parse_description_html(soup)
 
-    # Seller
+    # ── Seller ────────────────────────────────────────────────────────────────
     seller_name, seller_type = _parse_seller_html(soup)
 
-    # Image
-    imagen_url = _parse_image_html(soup)
-
-    # Address: prefer JSON-LD streetAddress, fallback to HTML
+    # ── Address ───────────────────────────────────────────────────────────────
     direccion = ldjson.get("direccion") or _parse_address_html(soup)
 
-    # Cochera / pileta from icons
-    cochera = (icons.get("garages", 0) or 0) > 0 or None
-    if cochera is False:
-        cochera = None  # null = unknown, not "no"
-
+    # ── Assemble sub-models ───────────────────────────────────────────────────
     return PropertyListing(
         url=url,
         portal="zonaprop",
-        external_id=_external_id_from_url(url),
+        external_id=ext_id,
         captured_at=datetime.now(_AR_TIMEZONE),
-        operation_type=price_data.get("operation_type"),
-        currency=currency,
-        precio=precio,
-        expenses=None,                          # no aparece en el HTML estático
-        title=title,
-        description=description,
-        tipo=tipo,
-        ambientes=icons.get("ambiences"),
-        bedrooms=ldjson.get("bedrooms") or icons.get("bedrooms"),
-        bathrooms=ldjson.get("bathrooms") or icons.get("bathrooms"),
-        superficie_total=icons.get("total_area"),
-        superficie_cubierta=icons.get("covered_area"),
-        superficie_semicubierta=icons.get("uncovered_area"),
-        superficie_descubierta=None,
-        antiguedad=icons.get("age"),
-        orientacion=icons.get("orientation"),
-        piso=icons.get("floor"),
-        cochera=True if icons.get("garages") else None,
-        pileta=None,
-        direccion=direccion,
-        location=ldjson.get("location"),
-        imagen_url=imagen_url,
-        dias_mercado=days_ago,
-        seller_name=seller_name,
-        seller_type=seller_type,
+        listing=ListingInfo(
+            title=title,
+            description=description,
+            operation_type=price_data.get("operation_type"),
+            dias_mercado=days_ago,
+            posting_type=script_vars.get("posting_type"),
+            posting_status=script_vars.get("posting_status"),
+            publication_tier=script_vars.get("publication_tier"),
+        ),
+        price=PriceInfo(
+            currency=currency,
+            precio=precio,
+            expenses=None,  # no aparece en el HTML estático
+        ),
+        property_info=PropertyInfo(
+            tipo=_parse_property_type(soup),
+            ambientes=icons.get("ambiences"),
+            bedrooms=ldjson.get("bedrooms") or icons.get("bedrooms"),
+            bathrooms=ldjson.get("bathrooms") or icons.get("bathrooms"),
+            superficie_total=icons.get("total_area"),
+            superficie_cubierta=icons.get("covered_area"),
+            superficie_semicubierta=icons.get("uncovered_area"),
+            superficie_descubierta=None,
+            antiguedad=icons.get("age"),
+            orientacion=icons.get("orientation"),
+            piso=icons.get("floor"),
+            cochera=True if icons.get("garages") else None,
+            pileta=None,
+            features=features,
+        ),
+        location=LocationInfo(
+            direccion=direccion,
+            country=ldjson.get("country"),
+            province=ldjson.get("province"),
+            city=ldjson.get("city"),
+            neighborhood=ldjson.get("neighborhood"),
+            lat=lat,
+            lon=lon,
+            address_visibility=script_vars.get("address_visibility"),
+        ),
+        media=MediaInfo(
+            imagen_url=_parse_image_html(soup),
+            pictures_count=pictures_count,
+            has_video=script_vars.get("has_video"),
+            has_tour_360=script_vars.get("has_tour_360"),
+        ),
+        seller=SellerInfo(
+            name=seller_name,
+            type=seller_type,
+            id=script_vars.get("seller_id"),
+            license=script_vars.get("seller_license"),
+            logo_url=script_vars.get("seller_logo_url"),
+        ),
     )
 
 
@@ -682,4 +906,4 @@ class ZonapropSource(BaseSource):
             listing.operation_type,
             listing.tipo,
         )
-        return listing.model_dump(exclude={"url", "portal"})
+        return listing.model_dump(by_alias=True, exclude={"url", "portal"})
