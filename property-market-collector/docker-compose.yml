@@ -6,3 +6,5 @@ services:
       - "8100:8100"
     environment:
       - SERVICE_TOKEN=${SERVICE_TOKEN:-}
+    volumes:
+      - ./data:/app/data:z
