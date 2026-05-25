@@ -56,15 +56,18 @@ def _slugify(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", ascii_text.lower().strip()).strip("-")
 
 
-async def _fetch_html(url: str, client: httpx.AsyncClient) -> str:
+async def _fetch_html(url: str, _client: httpx.AsyncClient) -> str:
+    """
+    Zonaprop siempre se renderiza con Playwright: el seller card y otros
+    bloques (publisher, expensas) son lazy-loaded via XHR y no aparecen
+    en el HTML estático que devuelve httpx.
+    Se espera el selector del seller para asegurar que el DOM esté completo.
+    """
     try:
-        r = await client.get(url)
-        if r.status_code == 403:
-            return await _browser.fetch_rendered(url)
-        r.raise_for_status()
-        return r.text
-    except HTTPException:
-        raise
+        return await _browser.fetch_rendered(
+            url,
+            wait_selector='[data-qa="linkMicrositioAnuncianteLeads"]',
+        )
     except Exception as e:
         raise HTTPException(502, f"Error al acceder a Zonaprop: {e}")
 

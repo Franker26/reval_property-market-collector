@@ -10,20 +10,8 @@ get {
   auth: none
 }
 
-docs {
-  # GET /health
-
-  Verifica que el servicio esté corriendo y devuelve la lista de portales soportados.
-  No requiere autenticación.
-
-  ## Response 200
-  ```json
-  {
-    "status": "ok",
-    "sources": ["zonaprop", "argenprop", "mercadolibre", "lacapital", "propia",
-                "liderprop", "inmoclick", "buscadorprop", "buscainmueble", "clarin", "doomos"]
-  }
-  ```
+vars:pre-request {
+  base_url: http://127.0.0.1:8100
 }
 
 tests {
@@ -39,4 +27,20 @@ tests {
       expect(res.body.sources).to.include(p);
     });
   });
+}
+
+docs {
+  # GET /health
+  
+  Verifica que el servicio esté corriendo y devuelve la lista de portales soportados.
+  No requiere autenticación.
+  
+  ## Response 200
+  ```json
+  {
+    "status": "ok",
+    "sources": ["zonaprop", "argenprop", "mercadolibre", "lacapital", "propia",
+                "liderprop", "inmoclick", "buscadorprop", "buscainmueble", "clarin", "doomos"]
+  }
+  ```
 }

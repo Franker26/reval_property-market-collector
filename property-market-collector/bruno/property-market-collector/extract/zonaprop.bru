@@ -20,14 +20,8 @@ body:json {
   }
 }
 
-docs {
-  # Extract — ZonaProp
-
-  ZonaProp es el portal con mayor cobertura en Argentina.
-  Los datos se obtienen principalmente de `window.__PRELOADED_STATE__` (JSON embedido)
-  con fallback a JSON-LD y scraping HTML.
-
-  Reemplazá la URL por cualquier publicación de zonaprop.com.ar.
+vars:pre-request {
+  base_url: http://127.0.0.1:8100
 }
 
 tests {
@@ -40,4 +34,14 @@ tests {
   test("tiene direccion", function() {
     expect(res.body.direccion).to.be.a("string").and.not.empty;
   });
+}
+
+docs {
+  # Extract — ZonaProp
+  
+  ZonaProp es el portal con mayor cobertura en Argentina.
+  Los datos se obtienen principalmente de `window.__PRELOADED_STATE__` (JSON embedido)
+  con fallback a JSON-LD y scraping HTML.
+  
+  Reemplazá la URL por cualquier publicación de zonaprop.com.ar.
 }
