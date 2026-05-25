@@ -1,0 +1,8 @@
+services:
+  property-market-collector:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8100:8100"
+    environment:
+      - SERVICE_TOKEN=${SERVICE_TOKEN:-}

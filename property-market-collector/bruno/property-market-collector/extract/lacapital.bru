@@ -1,0 +1,42 @@
+meta {
+  name: La Capital
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{base_url}}/extract
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{service_token}}
+}
+
+body:json {
+  {
+    "url": "https://inmuebles.lacapital.com.ar/inmuebles/venta/departamento/departamento-en-venta-rosario-centro_3088752/"
+  }
+}
+
+docs {
+  # Extract — La Capital
+
+  Portal de Rosario y el interior santafesino. No usa JSON-LD — los datos están
+  en iconos de imagen dentro de `<p class="miniinfo">` (ico_precio_us, ico_mt2cub, etc.).
+
+  El precio aparece en USD. La cobertura geográfica es principalmente Rosario.
+
+  Formato de URL: `/inmuebles/{operacion}/{tipo}/{slug}_{id}/`
+}
+
+tests {
+  test("status 200", function() {
+    expect(res.status).to.equal(200);
+  });
+  test("tiene precio o direccion", function() {
+    var tieneDatos = res.body.precio !== null || res.body.direccion !== null;
+    expect(tieneDatos).to.be.true;
+  });
+}

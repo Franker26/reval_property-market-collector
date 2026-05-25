@@ -1,0 +1,42 @@
+meta {
+  name: Health Check
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{base_url}}/health
+  body: none
+  auth: none
+}
+
+docs {
+  # GET /health
+
+  Verifica que el servicio esté corriendo y devuelve la lista de portales soportados.
+  No requiere autenticación.
+
+  ## Response 200
+  ```json
+  {
+    "status": "ok",
+    "sources": ["zonaprop", "argenprop", "mercadolibre", "lacapital", "propia",
+                "liderprop", "inmoclick", "buscadorprop", "buscainmueble", "clarin", "doomos"]
+  }
+  ```
+}
+
+tests {
+  test("status ok", function() {
+    expect(res.status).to.equal(200);
+    expect(res.body.status).to.equal("ok");
+  });
+  test("lista los 11 portales", function() {
+    var esperados = ["zonaprop", "argenprop", "mercadolibre", "lacapital", "propia",
+                     "liderprop", "inmoclick", "buscadorprop", "buscainmueble", "clarin", "doomos"];
+    expect(res.body.sources).to.be.an("array");
+    esperados.forEach(function(p) {
+      expect(res.body.sources).to.include(p);
+    });
+  });
+}

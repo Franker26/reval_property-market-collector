@@ -1,0 +1,43 @@
+meta {
+  name: ZonaProp
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{base_url}}/extract
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{service_token}}
+}
+
+body:json {
+  {
+    "url": "https://www.zonaprop.com.ar/propiedades/departamento-en-alquiler-palermo-47979890.html"
+  }
+}
+
+docs {
+  # Extract — ZonaProp
+
+  ZonaProp es el portal con mayor cobertura en Argentina.
+  Los datos se obtienen principalmente de `window.__PRELOADED_STATE__` (JSON embedido)
+  con fallback a JSON-LD y scraping HTML.
+
+  Reemplazá la URL por cualquier publicación de zonaprop.com.ar.
+}
+
+tests {
+  test("status 200", function() {
+    expect(res.status).to.equal(200);
+  });
+  test("tiene precio en USD", function() {
+    expect(res.body.precio).to.be.a("number").and.greaterThan(0);
+  });
+  test("tiene direccion", function() {
+    expect(res.body.direccion).to.be.a("string").and.not.empty;
+  });
+}

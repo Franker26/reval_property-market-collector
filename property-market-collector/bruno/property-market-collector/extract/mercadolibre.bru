@@ -1,0 +1,46 @@
+meta {
+  name: MercadoLibre
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{base_url}}/extract
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{service_token}}
+}
+
+body:json {
+  {
+    "url": "https://inmuebles.mercadolibre.com.ar/departamentos/alquiler/MLA-1234567890-departamento-2-ambientes-palermo_JM"
+  }
+}
+
+docs {
+  # Extract — MercadoLibre
+
+  MercadoLibre es una SPA — el extractor usa Playwright (Chromium headless)
+  para renderizar la página antes de parsear. Es el portal más lento (~5–10s).
+
+  La URL debe apuntar a una publicación individual (contiene `MLA-XXXXXXXXXX`).
+  Reemplazá la URL placeholder por una publicación real.
+
+  Ejemplo de URL válida:
+  `https://inmuebles.mercadolibre.com.ar/MLA-XXXXXXXXXX-titulo-de-publicacion_JM`
+}
+
+tests {
+  test("status 200 o 502 (portal puede estar lento)", function() {
+    expect([200, 502]).to.include(res.status);
+  });
+  test("si 200: tiene precio o superficie", function() {
+    if (res.status === 200) {
+      var tieneDatos = res.body.precio !== null || res.body.superficie_cubierta !== null;
+      expect(tieneDatos).to.be.true;
+    }
+  });
+}

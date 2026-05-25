@@ -1,0 +1,67 @@
+meta {
+  name: Extract
+  type: folder
+  seq: 2
+}
+
+docs {
+  # POST /extract
+
+  Extrae los datos completos de una publicación individual a partir de su URL.
+  Útil para obtener la ficha completa de una propiedad conocida.
+
+  ## Autenticación
+  Bearer token requerido: `Authorization: Bearer <SERVICE_TOKEN>`
+
+  ## Request Body
+  ```json
+  { "url": "https://www.zonaprop.com.ar/propiedades/..." }
+  ```
+
+  | Campo | Tipo   | Requerido | Descripción               |
+  |-------|--------|-----------|---------------------------|
+  | url   | string | ✓         | URL de la publicación     |
+
+  ## Portales soportados en /extract
+  | Portal          | Dominio                              |
+  |-----------------|--------------------------------------|
+  | ZonaProp        | zonaprop.com.ar                      |
+  | Argenprop       | argenprop.com                        |
+  | MercadoLibre    | inmuebles.mercadolibre.com.ar        |
+  | La Capital      | inmuebles.lacapital.com.ar           |
+  | Propia          | propia.com.ar                        |
+  | LiderProp       | liderprop.com                        |
+  | Inmoclick       | inmoclick.com                        |
+  | BuscadorProp    | buscadorprop.com.ar                  |
+  | BuscaInmueble   | buscainmueble.com                    |
+  | Clarín Inmuebles| inmuebles.clarin.com                 |
+  | Doomos AR       | ar.doomos.com                        |
+
+  ## Response 200
+  ```json
+  {
+    "precio": 95000,
+    "direccion": "Av. Santa Fe 1234, Palermo",
+    "tipo": "Departamento",
+    "dias_mercado": 12,
+    "superficie_cubierta": 65.0,
+    "superficie_semicubierta": null,
+    "superficie_descubierta": null,
+    "antiguedad": 15,
+    "orientacion": "Norte",
+    "piso": 4,
+    "cochera": false,
+    "pileta": false
+  }
+  ```
+
+  Todos los campos son opcionales — si el portal no publica el dato, el campo será `null`.
+
+  ## Errores
+  | Status | Causa                              |
+  |--------|------------------------------------|
+  | 400    | URL de un portal no soportado      |
+  | 401    | Token de autenticación inválido    |
+  | 422    | Página accesible pero sin datos    |
+  | 502    | Error al acceder al portal         |
+}

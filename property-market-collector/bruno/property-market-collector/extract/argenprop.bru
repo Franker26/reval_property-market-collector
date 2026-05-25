@@ -1,0 +1,42 @@
+meta {
+  name: Argenprop
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{base_url}}/extract
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{service_token}}
+}
+
+body:json {
+  {
+    "url": "https://www.argenprop.com/departamento-en-alquiler-en-palermo--2931898"
+  }
+}
+
+docs {
+  # Extract — Argenprop
+
+  Los datos se obtienen de JSON-LD, del input oculto `data-price` / `data-tipo-propiedad`,
+  y de la sección `.property-features`.
+
+  Reemplazá la URL por cualquier publicación de argenprop.com.
+}
+
+tests {
+  test("status 200", function() {
+    expect(res.status).to.equal(200);
+  });
+  test("tiene precio", function() {
+    expect(res.body.precio).to.be.a("number").and.greaterThan(0);
+  });
+  test("tiene direccion", function() {
+    expect(res.body.direccion).to.be.a("string").and.not.empty;
+  });
+}

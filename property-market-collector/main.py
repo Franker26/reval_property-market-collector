@@ -1,0 +1,56 @@
+import os
+from contextlib import asynccontextmanager
+
+import httpx
+from fastapi import FastAPI, Header, HTTPException
+from pydantic import BaseModel
+
+import sources
+from sources import browser as _browser_mod
+from sources.models import PropertyListing
+
+SERVICE_TOKEN = os.getenv("SERVICE_TOKEN", "")
+
+_BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "es-AR,es;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Site": "none",
+    "Upgrade-Insecure-Requests": "1",
+}
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await _browser_mod.get_browser()
+    yield
+    await _browser_mod.close()
+
+
+app = FastAPI(title="Property Market Collector", lifespan=lifespan)
+
+
+class ExtractRequest(BaseModel):
+    url: str
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "sources": sources.SUPPORTED_SOURCES}
+
+
+@app.post("/extract", response_model=PropertyListing)
+async def extract(body: ExtractRequest, authorization: str = Header(default="")):
+    if SERVICE_TOKEN and authorization != f"Bearer {SERVICE_TOKEN}":
+        raise HTTPException(401, "Unauthorized")
+
+    url = body.url.strip()
+    async with httpx.AsyncClient(headers=_BROWSER_HEADERS, follow_redirects=True, timeout=20) as client:
+        return await sources.extract(url, client)
+
