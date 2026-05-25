@@ -271,16 +271,38 @@ def _parse_published_days(soup: BeautifulSoup) -> Optional[int]:
     return None
 
 
+def _seller_type_from_href(href: str) -> Optional[str]:
+    """Derive seller type from the profile URL path segment."""
+    href = href.lower()
+    if "/inmobiliarias/" in href:
+        return "inmobiliaria"
+    if "/corredores/" in href:
+        return "corredor"
+    if "/desarrolladores/" in href or "/constructoras/" in href:
+        return "desarrollador"
+    if "/particulares/" in href:
+        return "particular"
+    return None
+
+
 def _parse_seller_html(soup: BeautifulSoup) -> tuple[Optional[str], Optional[str]]:
     """
     Returns (seller_name, seller_type).
-    Tries data-qa anchors and class patterns; returns (None, None) if not found
-    (common when the publisher card is lazy-loaded).
+
+    Strategy (in priority order):
+      1. <a data-qa="linkMicrositioAnuncianteLeads"> — most stable
+      2. <a data-qa="..."> regex fallback for other qa values
+      3. <a class="publisherCard-module__info-name___*"> CSS module class
+      4. Class-based patterns on any element
+
+    seller_type is derived first from the href path (/inmobiliarias/, etc.),
+    then from a type badge in the parent card container.
     """
     name: Optional[str] = None
     seller_type: Optional[str] = None
-
     seller_link: Optional[Tag] = None
+
+    # 1. data-qa exact matches
     for qa_val in (
         "linkMicrositioAnuncianteLeads",
         "publisher-profile-link",
@@ -292,27 +314,42 @@ def _parse_seller_html(soup: BeautifulSoup) -> tuple[Optional[str], Optional[str
             seller_link = el
             break
 
+    # 2. data-qa regex fallback
     if not seller_link:
         el = soup.find("a", attrs={"data-qa": re.compile(r"publisher|anunciante|leads", re.I)})
         if el and isinstance(el, Tag):
             seller_link = el
 
+    # 3. CSS Module class pattern: publisherCard-module__info-name___<hash>
+    if not seller_link:
+        el = soup.find("a", class_=re.compile(r"publisherCard-module__info-name", re.I))
+        if el and isinstance(el, Tag):
+            seller_link = el
+
     if seller_link:
         name = _clean_text(seller_link.get_text(" ", strip=True)) or None
-        card = seller_link.find_parent(
-            class_=re.compile(r"publisherCard|publisher[-_]card|publisher[-_]module", re.I)
-        )
-        if card and isinstance(card, Tag):
-            type_el = card.find(class_=re.compile(r"type|categoria|label|badge", re.I))
-            if type_el and isinstance(type_el, Tag):
-                raw = type_el.get_text(" ", strip=True).lower()
-                if "inmobiliaria" in raw or "empresa" in raw:
-                    seller_type = "inmobiliaria"
-                elif "particular" in raw:
-                    seller_type = "particular"
-                elif "desarrollador" in raw or "developer" in raw:
-                    seller_type = "desarrollador"
+        href = str(seller_link.get("href", ""))
+
+        # Derive type from href path — most reliable, no need for parent card
+        seller_type = _seller_type_from_href(href)
+
+        # Fallback: look for type badge in the parent card container
+        if not seller_type:
+            card = seller_link.find_parent(
+                class_=re.compile(r"publisherCard|publisher[-_]card|publisher[-_]module", re.I)
+            )
+            if card and isinstance(card, Tag):
+                type_el = card.find(class_=re.compile(r"type|categoria|label|badge", re.I))
+                if type_el and isinstance(type_el, Tag):
+                    raw = type_el.get_text(" ", strip=True).lower()
+                    if "inmobiliaria" in raw or "empresa" in raw:
+                        seller_type = "inmobiliaria"
+                    elif "particular" in raw:
+                        seller_type = "particular"
+                    elif "desarrollador" in raw or "developer" in raw:
+                        seller_type = "desarrollador"
     else:
+        # 4. Generic class-based fallback
         for pattern in (r"info[-_]?name", r"publisher[-_]?name", r"publisherName"):
             for el in soup.find_all(class_=re.compile(pattern, re.I)):
                 if not isinstance(el, Tag):
