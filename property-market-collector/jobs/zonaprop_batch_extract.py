@@ -70,10 +70,14 @@ _AR_TIMEZONE = timezone(timedelta(hours=-3))
 _DISCOVERY_DIR  = _PROJECT_ROOT / "data" / "discovery"
 _SNAPSHOTS_DIR  = _PROJECT_ROOT / "data" / "snapshots"
 _ERRORS_DIR     = _PROJECT_ROOT / "data" / "errors"
+_RUNS_DIR       = _PROJECT_ROOT / "data" / "runs"
 
 _DISCOVERY_FILENAME_TPL = "zonaprop_urls_{date}.jsonl"
 _SNAPSHOTS_FILENAME_TPL = "zonaprop_snapshots_{date}.jsonl"
 _ERRORS_FILENAME_TPL    = "zonaprop_extract_errors_{date}.jsonl"
+_RUNS_FILENAME          = "zonaprop_runs.jsonl"
+
+_DEFAULT_ALERT_THRESHOLD = 20.0   # % de errores que dispara la alerta
 
 _HTTPX_HEADERS = {
     "User-Agent": (
@@ -150,6 +154,49 @@ def _append_jsonl_sync(record: dict, path: Path) -> None:
         fh.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
 
 
+def _write_run_record(stats: dict, args_dict: dict) -> Path:
+    """
+    Agrega una línea al historial de corridas en data/runs/zonaprop_runs.jsonl.
+    Devuelve el path del archivo de runs.
+    """
+    _RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    runs_path = _RUNS_DIR / _RUNS_FILENAME
+
+    processed = stats["urls_to_process"]
+    failed    = stats["failed"]
+    error_rate = round(failed / processed * 100, 2) if processed else 0.0
+
+    record = {
+        "run_id"            : stats["run_id"],
+        "date"              : stats["run_date"],
+        "input"             : stats["input"],
+        "urls_read"         : stats["urls_read"],
+        "unique_urls"       : stats["unique_urls"],
+        "input_duplicates"  : stats["input_duplicates"],
+        "selected"          : stats["selected"],
+        "skipped_resume"    : stats["skipped_resume"],
+        "skipped_errors"    : stats["skipped_errors"],
+        "urls_processed"    : processed,
+        "successful"        : stats["successful"],
+        "failed"            : failed,
+        "error_rate_pct"    : error_rate,
+        "top_errors"        : stats["top_errors"],
+        "elapsed_seconds"   : round(stats["elapsed_seconds"], 1),
+        "avg_rate_per_min"  : round(stats["avg_rate_per_min"], 1),
+        "concurrency"       : stats["concurrency"],
+        "offset"            : args_dict.get("offset", 0),
+        "limit"             : args_dict.get("limit"),
+        "resume"            : args_dict.get("resume", False),
+        "skip_errors"       : args_dict.get("skip_errors", False),
+        "timeout"           : args_dict.get("timeout"),
+        "delay"             : args_dict.get("delay"),
+        "snapshots_path"    : stats["snapshots_path"],
+        "errors_path"       : stats["errors_path"],
+    }
+    _append_jsonl_sync(record, runs_path)
+    return runs_path
+
+
 # ── Estado compartido del batch ───────────────────────────────────────────────
 
 class _BatchState:
@@ -165,6 +212,7 @@ class _BatchState:
         self.completed      = 0
         self.successful     = 0
         self.failed         = 0
+        self.error_types:   dict[str, int] = {}   # {"TimeoutError": 12, ...}
         self.start_time     = time.monotonic()
         self.write_lock     = asyncio.Lock()
 
@@ -172,9 +220,14 @@ class _BatchState:
         self.completed  += 1
         self.successful += 1
 
-    def record_error(self) -> None:
+    def record_error(self, error_type: str = "Unknown") -> None:
         self.completed += 1
         self.failed    += 1
+        self.error_types[error_type] = self.error_types.get(error_type, 0) + 1
+
+    def top_errors(self, n: int = 5) -> dict[str, int]:
+        """Devuelve los N tipos de error más frecuentes, ordenados."""
+        return dict(sorted(self.error_types.items(), key=lambda x: x[1], reverse=True)[:n])
 
     def should_log_progress(self) -> bool:
         return (
@@ -253,24 +306,25 @@ async def _process_one(
             }
             async with state.write_lock:
                 _append_jsonl_sync(error_record, errors_path)
-            state.record_error()
+            state.record_error("TimeoutError")
             log.warning("✗ TIMEOUT [%d/%d] id=%s url=%s", idx, state.total, external_id, url)
 
         except Exception as exc:
+            etype = type(exc).__name__
             error_record = {
                 "source": "zonaprop",
                 "url": url,
                 "external_id": external_id,
-                "error_type": type(exc).__name__,
+                "error_type": etype,
                 "error_message": str(exc),
                 "failed_at": datetime.now(_AR_TIMEZONE).isoformat(),
             }
             async with state.write_lock:
                 _append_jsonl_sync(error_record, errors_path)
-            state.record_error()
+            state.record_error(etype)
             log.warning(
                 "✗ ERROR [%d/%d] id=%s → %s: %s",
-                idx, state.total, external_id, type(exc).__name__, exc,
+                idx, state.total, external_id, etype, exc,
             )
 
     # Progreso (fuera del semaphore para no bloquear otros workers)
@@ -298,6 +352,7 @@ async def run_batch(
     progress_every: int,
     delay: float,
     timeout: float,
+    alert_threshold: float,
 ) -> dict:
     """
     Orquesta la extracción batch con concurrencia controlada.
@@ -372,9 +427,15 @@ async def run_batch(
         log.info("  %d omitidas por --skip-errors (errores previos)", skipped_errors)
     log.info("  → %d URLs a procesar efectivamente", total_to_process)
 
+    run_id   = datetime.now(_AR_TIMEZONE).isoformat()
+    run_date = date.today().isoformat()
+
     if total_to_process == 0:
         log.warning("No hay URLs nuevas a procesar.")
         return {
+            "run_id"             : run_id,
+            "run_date"           : run_date,
+            "input"              : input_path.name,
             "urls_read"          : total_read,
             "unique_urls"        : len(unique_records),
             "input_duplicates"   : input_duplicates,
@@ -384,6 +445,7 @@ async def run_batch(
             "urls_to_process"    : 0,
             "successful"         : 0,
             "failed"             : 0,
+            "top_errors"         : {},
             "elapsed_seconds"    : 0.0,
             "avg_rate_per_min"   : 0.0,
             "concurrency"        : concurrency,
@@ -434,6 +496,9 @@ async def run_batch(
         await _browser.close()
 
     return {
+        "run_id"            : run_id,
+        "run_date"          : run_date,
+        "input"             : input_path.name,
         "urls_read"         : total_read,
         "unique_urls"       : len(unique_records),
         "input_duplicates"  : input_duplicates,
@@ -443,6 +508,7 @@ async def run_batch(
         "urls_to_process"   : total_to_process,
         "successful"        : state.successful,
         "failed"            : state.failed,
+        "top_errors"        : state.top_errors(),
         "elapsed_seconds"   : state.elapsed_seconds(),
         "avg_rate_per_min"  : state.avg_rate_per_min(),
         "concurrency"       : concurrency,
@@ -510,6 +576,14 @@ Ejemplos:
         metavar="SECONDS",
         help="Timeout por extracción en segundos (default: 30).",
     )
+    parser.add_argument(
+        "--alert-threshold", type=float, default=_DEFAULT_ALERT_THRESHOLD,
+        metavar="PCT",
+        help=(
+            "Porcentaje de errores que dispara una alerta al finalizar "
+            f"(default: {_DEFAULT_ALERT_THRESHOLD})."
+        ),
+    )
 
     return parser.parse_args()
 
@@ -541,21 +615,23 @@ def main() -> int:
     log.info("  progress-every : %d", args.progress_every)
     log.info("  delay          : %.1fs", args.delay)
     log.info("  timeout        : %.1fs", args.timeout)
+    log.info("  alert-threshold: %.1f%%", args.alert_threshold)
     log.info("=" * 60)
 
     stats = asyncio.run(
         run_batch(
-            input_path     = input_path,
-            snapshots_path = snap_path,
-            errors_path    = err_path,
-            limit          = args.limit,
-            offset         = args.offset,
-            concurrency    = args.concurrency,
-            resume         = args.resume,
-            skip_errors    = args.skip_errors,
-            progress_every = args.progress_every,
-            delay          = args.delay,
-            timeout        = args.timeout,
+            input_path      = input_path,
+            snapshots_path  = snap_path,
+            errors_path     = err_path,
+            limit           = args.limit,
+            offset          = args.offset,
+            concurrency     = args.concurrency,
+            resume          = args.resume,
+            skip_errors     = args.skip_errors,
+            progress_every  = args.progress_every,
+            delay           = args.delay,
+            timeout         = args.timeout,
+            alert_threshold = args.alert_threshold,
         )
     )
 
@@ -589,7 +665,28 @@ def main() -> int:
     log.info("  Duración total           : %s", elapsed_str)
     log.info("  Velocidad promedio       : %.1f URLs/min", stats["avg_rate_per_min"])
     log.info("  Concurrencia usada       : %d", stats["concurrency"])
+    if stats["top_errors"]:
+        log.info("  Top errores              : %s", stats["top_errors"])
     log.info("=" * 60)
+
+    # ── Guardar registro de la corrida ────────────────────────────────────────
+    args_dict = vars(args)
+    runs_path = _write_run_record(stats, args_dict)
+    log.info("Run registrado → %s", runs_path)
+
+    # ── Alerta por tasa de error ──────────────────────────────────────────────
+    processed   = stats["urls_to_process"]
+    error_rate  = stats["failed"] / processed * 100 if processed else 0.0
+    if processed > 0 and error_rate >= args.alert_threshold:
+        log.warning("")
+        log.warning("!" * 60)
+        log.warning("⚠  ALERTA: tasa de error %.1f%% ≥ umbral %.1f%%",
+                    error_rate, args.alert_threshold)
+        log.warning("   Fallidas  : %d / %d URLs", stats["failed"], processed)
+        log.warning("   Top errores: %s", stats["top_errors"])
+        log.warning("   Revisar   : %s", stats["errors_path"])
+        log.warning("!" * 60)
+        log.warning("")
 
     return 0 if stats["successful"] > 0 else 1
 
