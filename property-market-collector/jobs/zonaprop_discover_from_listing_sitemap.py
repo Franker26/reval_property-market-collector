@@ -200,6 +200,8 @@ def _parse_args() -> argparse.Namespace:
                    help="Log cada N listing URLs procesadas")
     p.add_argument("--limit", type=int, default=None,
                    help="Limitar total de listing URLs (para tests)")
+    p.add_argument("--session-every", type=int, default=50,
+                   help="Rotar sesión httpx cada N URLs procesadas (default: 50)")
     # ── Distribución en múltiples instancias ──────────────────────────────────
     p.add_argument("--shard", default=None, metavar="N/M",
                    help="Procesar solo el shard N de M (ej: --shard 0/3, 1/3, 2/3). "
@@ -254,11 +256,11 @@ async def _run(args: argparse.Namespace) -> int:
     log.info("Zonaprop listing sitemaps discovery — iniciando")
     log.info("  max_pages_per_url : %d", args.max_pages_per_url)
     log.info("  delay base        : %.1fs ± 40%%", args.delay)
+    log.info("  session_every     : %d URLs", args.session_every)
     log.info("  shard             : %s", args.shard or "ninguno (todas las URLs)")
     log.info("  proxy             : %s", args.proxy or "directo")
     log.info("  output            : %s", output_file)
     log.info("  resume            : %s", args.resume)
-    log.info("  playwright        : %s", "activo" if playwright_ok else "inactivo")
     log.info("=" * 60)
 
     start_time = time.monotonic()
@@ -267,16 +269,16 @@ async def _run(args: argparse.Namespace) -> int:
     processed_count = 0
     failed_urls = 0
     total_raw = 0
+    consecutive_403s = 0
 
-    fallback = _browser.fetch_rendered if playwright_ok else None
+    # Sin Playwright en el discovery — solo httpx. Playwright no pasa Cloudflare
+    # en el contexto headless del server y solo suma latencia.
+    fallback = None
 
-    # Sesión persistente compartida entre todas las listing URLs.
-    # Mantiene cookies y keep-alive, como un navegador real que sigue navegando.
     session = make_session_client(proxy=args.proxy)
 
     try:
         for global_idx, listing_url in enumerate(iter_all_listing_urls(local_paths=args.local_paths)):
-            # Sharding: esta instancia solo procesa URLs donde global_idx % total == shard_idx
             if shard is not None:
                 shard_idx, shard_total = shard
                 if global_idx % shard_total != shard_idx:
@@ -292,14 +294,30 @@ async def _run(args: argparse.Namespace) -> int:
                 skipped_urls += 1
                 continue
 
-            # Delay aleatorio entre listing URLs (jitter humano)
+            # Rotación de sesión: nueva cada session_every URLs para no acumular
+            # señales de bot en cookies/fingerprint de la sesión
+            if processed_count > 0 and processed_count % args.session_every == 0:
+                await session.aclose()
+                session = make_session_client(proxy=args.proxy)
+                log.info("sesión rotada (cada %d URLs)", args.session_every)
+                # Pausa extra al rotar sesión — simula abrir un nuevo browser
+                await asyncio.sleep(random.uniform(3.0, 7.0))
+
+            # Backoff si hay 403s consecutivos: la IP está siendo limitada
+            if consecutive_403s >= 3:
+                cooldown = random.uniform(20.0, 40.0)
+                log.warning("3 errores 403 consecutivos — cooldown %.0fs", cooldown)
+                await asyncio.sleep(cooldown)
+                consecutive_403s = 0
+
+            # Delay normal entre listing URLs
             if processed_count > 0 and args.delay > 0:
                 actual_delay = max(0.5, args.delay * random.uniform(0.6, 1.4))
                 await asyncio.sleep(actual_delay)
 
             operation_type = infer_operation_type(listing_url)
-
             page_records_buffer: list[DiscoveryRecord] = []
+            got_403 = False
 
             async def on_page_done(
                 page: int,
@@ -323,6 +341,12 @@ async def _run(args: argparse.Namespace) -> int:
                 )
                 total_raw += crawl_stats.get("urls_total", 0)
                 await writer.write_records(page_records_buffer)
+                # Resetear 403 counter si esta URL tuvo al menos una página OK
+                if crawl_stats.get("pages_ok", 0) > 0:
+                    consecutive_403s = 0
+                elif crawl_stats.get("pages_failed", 0) > 0:
+                    consecutive_403s += 1
+                    got_403 = True
             except Exception as exc:
                 log.warning("error procesando %s — %s", listing_url, exc)
                 failed_urls += 1
