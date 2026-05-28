@@ -200,15 +200,38 @@ def _parse_args() -> argparse.Namespace:
                    help="Log cada N listing URLs procesadas")
     p.add_argument("--limit", type=int, default=None,
                    help="Limitar total de listing URLs (para tests)")
+    # ── Distribución en múltiples instancias ──────────────────────────────────
+    p.add_argument("--shard", default=None, metavar="N/M",
+                   help="Procesar solo el shard N de M (ej: --shard 0/3, 1/3, 2/3). "
+                        "Divide el sitemap en M partes iguales, esta instancia toma la N.")
+    p.add_argument("--proxy", default=None, metavar="URL",
+                   help="Proxy para esta instancia (ej: http://user:pass@host:port). "
+                        "Cada instancia puede apuntar a un proxy distinto.")
     return p.parse_args()
 
 
 # ── Core async ────────────────────────────────────────────────────────────────
 
 
+def _parse_shard(shard_str: str | None) -> tuple[int, int] | None:
+    """Parsea '2/5' → (2, 5). Retorna None si no se especificó."""
+    if not shard_str:
+        return None
+    try:
+        idx, total = shard_str.split("/")
+        idx, total = int(idx), int(total)
+        if not (0 <= idx < total):
+            raise ValueError(f"shard index {idx} fuera de rango (total {total})")
+        return idx, total
+    except Exception as exc:
+        raise SystemExit(f"--shard inválido '{shard_str}': {exc}") from exc
+
+
 async def _run(args: argparse.Namespace) -> int:
     output_file = Path(args.output) if args.output else _default_output()
     state_file  = Path(args.state)
+
+    shard = _parse_shard(args.shard)
 
     # Estado y dedup
     processed_urls: set[str] = set()
@@ -231,6 +254,8 @@ async def _run(args: argparse.Namespace) -> int:
     log.info("Zonaprop listing sitemaps discovery — iniciando")
     log.info("  max_pages_per_url : %d", args.max_pages_per_url)
     log.info("  delay base        : %.1fs ± 40%%", args.delay)
+    log.info("  shard             : %s", args.shard or "ninguno (todas las URLs)")
+    log.info("  proxy             : %s", args.proxy or "directo")
     log.info("  output            : %s", output_file)
     log.info("  resume            : %s", args.resume)
     log.info("  playwright        : %s", "activo" if playwright_ok else "inactivo")
@@ -247,10 +272,16 @@ async def _run(args: argparse.Namespace) -> int:
 
     # Sesión persistente compartida entre todas las listing URLs.
     # Mantiene cookies y keep-alive, como un navegador real que sigue navegando.
-    session = make_session_client()
+    session = make_session_client(proxy=args.proxy)
 
     try:
-        for listing_url in iter_all_listing_urls(local_paths=args.local_paths):
+        for global_idx, listing_url in enumerate(iter_all_listing_urls(local_paths=args.local_paths)):
+            # Sharding: esta instancia solo procesa URLs donde global_idx % total == shard_idx
+            if shard is not None:
+                shard_idx, shard_total = shard
+                if global_idx % shard_total != shard_idx:
+                    continue
+
             total_listing_urls += 1
 
             if args.limit and total_listing_urls > args.limit:

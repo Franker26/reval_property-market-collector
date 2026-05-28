@@ -230,15 +230,20 @@ async def discover_catalog(
 # ── Crear cliente de sesión persistente ───────────────────────────────────────
 
 
-def make_session_client() -> httpx.AsyncClient:
+def make_session_client(proxy: str | None = None) -> httpx.AsyncClient:
     """
     Crea un AsyncClient de larga vida para compartir entre múltiples llamadas
     a discover_catalog. Mantiene cookies y conexiones keep-alive, simulando
     una sesión de navegador real.
+
+    proxy: URL del proxy (ej: "http://user:pass@host:port"). Si es None,
+           usa la conexión directa.
     """
-    return httpx.AsyncClient(
-        headers=_BASE_HEADERS,
-        follow_redirects=True,
-        timeout=30,
-        # httpx usa connection pooling por defecto — las conexiones se reusan
-    )
+    kwargs: dict = {
+        "headers": _BASE_HEADERS,
+        "follow_redirects": True,
+        "timeout": 30,
+    }
+    if proxy:
+        kwargs["proxy"] = proxy
+    return httpx.AsyncClient(**kwargs)
