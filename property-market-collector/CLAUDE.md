@@ -51,15 +51,15 @@ Los portales SPA (JS pesado) deben usar `browser_page()` de `browser.py`. Los se
 docker compose up --build
 
 # Smoke test
-curl http://localhost:8100/health
+curl http://localhost:8200/health
 
 # Probar extracción
-curl -X POST http://localhost:8100/extract \
+curl -X POST http://localhost:8200/extract \
   -H "Content-Type: application/json" \
   -d '{"url": "https://www.zonaprop.com.ar/propiedades/..."}'
 ```
 
-Para pruebas completas: colección Bruno en `bruno/` contra `http://localhost:8100`.
+Para pruebas completas: colección Bruno en `bruno/` contra `http://localhost:8200`.
 
 ---
 
@@ -67,5 +67,5 @@ Para pruebas completas: colección Bruno en `bruno/` contra `http://localhost:81
 
 No hay suite de tests automatizada. Para validar cambios:
 1. Levantar con `docker compose up`
-2. Usar la colección Bruno en `bruno/` contra `http://localhost:8100`
+2. Usar la colección Bruno en `bruno/` contra `http://localhost:8200`
 3. Verificar que `/health` y `/extract` respondan correctamente para el portal modificado

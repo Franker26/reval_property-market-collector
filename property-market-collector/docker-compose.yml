@@ -3,7 +3,7 @@ services:
     build: .
     restart: unless-stopped
     ports:
-      - "8100:8100"
+      - "8200:8200"
     environment:
       - SERVICE_TOKEN=${SERVICE_TOKEN:-}
     volumes:

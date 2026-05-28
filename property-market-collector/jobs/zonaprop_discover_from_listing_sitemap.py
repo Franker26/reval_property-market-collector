@@ -31,6 +31,7 @@ import argparse
 import asyncio
 import json
 import logging
+import random
 import sys
 import time
 from datetime import date, datetime, timezone, timedelta
@@ -45,7 +46,7 @@ from discovery.zonaprop.listing_sitemap import (  # noqa: E402
     iter_all_listing_urls,
     infer_operation_type,
 )
-from discovery.zonaprop.listing_pages import discover_catalog  # noqa: E402
+from discovery.zonaprop.listing_pages import discover_catalog, make_session_client  # noqa: E402
 from discovery.zonaprop.models import DiscoveryRecord           # noqa: E402
 
 import types as _types
@@ -189,10 +190,8 @@ def _parse_args() -> argparse.Namespace:
     )
     p.add_argument("--max-pages-per-url", type=int, default=5,
                    help="Máximo de páginas por listing URL (robots.txt permite 2-5; 6-9 grey zone)")
-    p.add_argument("--concurrency", type=int, default=3,
-                   help="Páginas concurrentes dentro de cada URL")
-    p.add_argument("--delay", type=float, default=1.0,
-                   help="Segundos entre listing URLs (evitar rate limiting)")
+    p.add_argument("--delay", type=float, default=2.0,
+                   help="Delay base entre listing URLs en segundos (se aplica jitter ±40%%)")
     p.add_argument("--output", default=None, help="Path del JSONL de salida")
     p.add_argument("--state", default=str(_STATE_FILE), help="Path del state file")
     p.add_argument("--resume", action="store_true",
@@ -231,8 +230,7 @@ async def _run(args: argparse.Namespace) -> int:
     log.info("=" * 60)
     log.info("Zonaprop listing sitemaps discovery — iniciando")
     log.info("  max_pages_per_url : %d", args.max_pages_per_url)
-    log.info("  concurrency       : %d", args.concurrency)
-    log.info("  delay entre URLs  : %.1fs", args.delay)
+    log.info("  delay base        : %.1fs ± 40%%", args.delay)
     log.info("  output            : %s", output_file)
     log.info("  resume            : %s", args.resume)
     log.info("  playwright        : %s", "activo" if playwright_ok else "inactivo")
@@ -247,8 +245,11 @@ async def _run(args: argparse.Namespace) -> int:
 
     fallback = _browser.fetch_rendered if playwright_ok else None
 
+    # Sesión persistente compartida entre todas las listing URLs.
+    # Mantiene cookies y keep-alive, como un navegador real que sigue navegando.
+    session = make_session_client()
+
     try:
-        # Iterar las listing URLs del sitemap
         for listing_url in iter_all_listing_urls(local_paths=args.local_paths):
             total_listing_urls += 1
 
@@ -256,18 +257,17 @@ async def _run(args: argparse.Namespace) -> int:
                 log.info("--limit %d alcanzado, deteniendo", args.limit)
                 break
 
-            # Resume: saltar URLs ya procesadas
             if listing_url in processed_urls:
                 skipped_urls += 1
                 continue
 
-            # Delay entre URLs
+            # Delay aleatorio entre listing URLs (jitter humano)
             if processed_count > 0 and args.delay > 0:
-                await asyncio.sleep(args.delay)
+                actual_delay = max(0.5, args.delay * random.uniform(0.6, 1.4))
+                await asyncio.sleep(actual_delay)
 
             operation_type = infer_operation_type(listing_url)
 
-            # Callback: recibe los resultados de cada página
             page_records_buffer: list[DiscoveryRecord] = []
 
             async def on_page_done(
@@ -284,13 +284,14 @@ async def _run(args: argparse.Namespace) -> int:
                     operation_type=operation_type,
                     start_page=1,
                     max_pages=args.max_pages_per_url,
-                    concurrency=args.concurrency,
-                    delay=0.0,
+                    concurrency=1,
+                    delay=args.delay,
                     on_page_done=on_page_done,
                     fallback_fetch=fallback,
+                    client=session,
                 )
                 total_raw += crawl_stats.get("urls_total", 0)
-                written, _ = await writer.write_records(page_records_buffer)
+                await writer.write_records(page_records_buffer)
             except Exception as exc:
                 log.warning("error procesando %s — %s", listing_url, exc)
                 failed_urls += 1
@@ -298,7 +299,6 @@ async def _run(args: argparse.Namespace) -> int:
                 processed_urls.add(listing_url)
                 processed_count += 1
 
-            # Progress log
             done = processed_count + skipped_urls
             if done % args.progress_every == 0 and done > 0:
                 elapsed = time.monotonic() - start_time
@@ -308,13 +308,12 @@ async def _run(args: argparse.Namespace) -> int:
                     processed_count, skipped_urls, writer.total_written, rate,
                 )
 
-            # Guardar state periódicamente
             if processed_count % _STATE_SAVE_EVERY == 0 and processed_count > 0:
                 _save_state(state_file, processed_urls, writer.total_written)
 
     finally:
-        # Guardar state final siempre
         _save_state(state_file, processed_urls, writer.total_written)
+        await session.aclose()
         await _browser.close()
 
     elapsed = time.monotonic() - start_time
