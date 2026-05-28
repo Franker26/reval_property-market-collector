@@ -31,7 +31,8 @@ _NS = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
 
 _HTTP_HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (compatible; RevalBot/1.0; +https://reval.com.ar/bot)"
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     ),
     "Accept": "application/xml, text/xml, */*;q=0.8",
     "Accept-Encoding": "gzip, deflate",
