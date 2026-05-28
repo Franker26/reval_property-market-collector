@@ -27,6 +27,15 @@ log = logging.getLogger(__name__)
 SITEMAP_INDEX_URL = "https://www.zonaprop.com.ar/sitemaps_https.xml"
 LIST_SITEMAP_PATTERN = re.compile(r"sitemap_list_https_", re.IGNORECASE)
 
+# Fallback cuando el índice devuelve 403 (IP rate-limited por Cloudflare).
+# URLs obtenidas del índice — extensión .gz confirmada.
+_KNOWN_LIST_SITEMAP_URLS = [
+    "https://www.zonaprop.com.ar/sitemap_list_https_1.xml.gz",
+    "https://www.zonaprop.com.ar/sitemap_list_https_2.xml.gz",
+    "https://www.zonaprop.com.ar/sitemap_list_https_3.xml.gz",
+    "https://www.zonaprop.com.ar/sitemap_list_https_4.xml.gz",
+]
+
 _NS = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
 
 _HTTP_HEADERS = {
@@ -155,8 +164,10 @@ def iter_all_listing_urls(
         try:
             sitemap_urls = get_list_sitemap_urls(client)
         except Exception as exc:
-            log.error("listing_sitemap: no se pudo obtener el índice: %s", exc)
-            return
+            log.warning(
+                "listing_sitemap: índice no accesible (%s) — usando URLs conocidas", exc
+            )
+            sitemap_urls = _KNOWN_LIST_SITEMAP_URLS
 
         for sitemap_url in sitemap_urls:
             filename = sitemap_url.rsplit("/", 1)[-1]

@@ -187,8 +187,8 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Paths locales a los XML de listing sitemaps (dev/test)",
     )
-    p.add_argument("--max-pages-per-url", type=int, default=9,
-                   help="Máximo de páginas por listing URL (default: 9, safe zone Cloudflare)")
+    p.add_argument("--max-pages-per-url", type=int, default=5,
+                   help="Máximo de páginas por listing URL (robots.txt permite 2-5; 6-9 grey zone)")
     p.add_argument("--concurrency", type=int, default=3,
                    help="Páginas concurrentes dentro de cada URL")
     p.add_argument("--delay", type=float, default=1.0,
