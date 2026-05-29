@@ -14,7 +14,6 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from app.core.config import get_settings
-from app.core.time_windows import is_within_operational_window
 
 log = logging.getLogger(__name__)
 
@@ -42,9 +41,6 @@ async def _job_segment_discovery() -> None:
 
 
 async def _job_url_discovery() -> None:
-    if not is_within_operational_window():
-        log.info("scheduler: fuera de ventana — omitiendo url_discovery")
-        return
     log.info("scheduler: iniciando url_discovery")
     try:
         from app.services.discovery_service import run_url_discovery
@@ -55,9 +51,6 @@ async def _job_url_discovery() -> None:
 
 
 async def _job_incremental_monitor() -> None:
-    if not is_within_operational_window():
-        log.info("scheduler: fuera de ventana — omitiendo incremental_monitor")
-        return
     log.info("scheduler: iniciando incremental_monitor")
     try:
         from app.services.discovery_service import run_incremental_monitor
@@ -65,6 +58,7 @@ async def _job_incremental_monitor() -> None:
         log.info("scheduler: incremental_monitor finalizado — %s", result)
     except Exception as exc:
         log.error("scheduler: error en incremental_monitor — %s", exc)
+
 
 
 # ── Configuración del scheduler ───────────────────────────────────────────────
