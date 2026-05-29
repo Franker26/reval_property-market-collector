@@ -1,15 +1,13 @@
 """
-Gestión de sesión con Playwright para requests API.
+Gestión de sesión HTTP con TLS fingerprint de Chrome real.
 
-Problema: Cloudflare Bot Management bloquea httpx aunque tenga cf_clearance,
-porque analiza el TLS fingerprint (JA3). httpx usa el SSL de Python, que
-es identificable como no-browser.
+Problema: Cloudflare Bot Management detecta Python/OpenSSL en Linux
+(servidores, Docker) por el JA3 fingerprint y devuelve 403.
+El JA3 de macOS pasa, pero en Docker/Linux es bloqueado.
 
-Solución: usar Playwright's APIRequestContext (context.request) para los
-POST a la API. Hace requests HTTP reales usando el stack de red del browser
-(TLS correcto, cookies incluidas), sin renderizar JavaScript.
-
-Es mucho más liviano que cargar una página completa.
+Solución: curl_cffi — wrapper de curl-impersonate que usa el stack TLS
+de Chrome real. Produce el mismo JA3 que un browser, en cualquier OS.
+Sin Playwright, sin warmup, sin cf_clearance necesario.
 """
 from __future__ import annotations
 
@@ -17,101 +15,80 @@ import json
 import logging
 from typing import Any, Optional
 
-from playwright.async_api import Browser, BrowserContext
+from curl_cffi.requests import AsyncSession
 
 log = logging.getLogger(__name__)
 
-_WARMUP_WAIT_MS = 8_000   # tiempo para que el JS challenge de Cloudflare ejecute
+# Versión de Chrome a impersonar — debe coincidir con el User-Agent
+_IMPERSONATE = "chrome120"
+
+_BASE_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "es-AR,es;q=0.9",
+    "Content-Type": "application/json",
+    "Origin": "https://www.zonaprop.com.ar",
+    "Referer": "https://www.zonaprop.com.ar/inmuebles-venta.html",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin",
+}
 
 
 class ZonapropSession:
     """
-    Encapsula un BrowserContext de Playwright para hacer requests API
-    a Zonaprop con TLS fingerprint correcto y cookies de sesión.
+    Sesión HTTP con TLS fingerprint de Chrome via curl_cffi.
+    No requiere Playwright ni warmup.
     """
 
-    def __init__(self, ctx: BrowserContext, cf_clearance: bool = False) -> None:
-        self._ctx = ctx
-        self.cf_clearance = cf_clearance
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+        self.cf_clearance = True  # curl_cffi bypasa el check — siempre OK
 
-    async def post_json(self, url: str, payload: dict, extra_headers: Optional[dict] = None) -> Optional[dict]:
-        """
-        POST JSON a la URL usando el context de Playwright.
-        Devuelve el JSON de respuesta, o None si falla.
-        """
-        # Headers que envía Chrome real para un fetch() mismo-origen
-        headers = {
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "es-AR,es;q=0.9",
-            "Content-Type": "application/json",
-            "Sec-Fetch-Dest": "empty",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "same-origin",
-        }
+    async def post_json(
+        self,
+        url: str,
+        payload: dict,
+        extra_headers: Optional[dict] = None,
+    ) -> Optional[dict]:
+        headers = dict(_BASE_HEADERS)
         if extra_headers:
             headers.update(extra_headers)
-
         try:
-            resp = await self._ctx.request.post(
+            resp = await self._session.post(
                 url,
                 data=json.dumps(payload),
                 headers=headers,
+                impersonate=_IMPERSONATE,
+                timeout=30,
             )
-            if resp.status == 200:
-                return await resp.json()
-            log.warning("session.post_json: HTTP %d → %s", resp.status, url)
-            return {"__http_error__": resp.status}
+            if resp.status_code == 200:
+                return resp.json()
+            log.warning("session.post_json: HTTP %d → %s", resp.status_code, url)
+            return {"__http_error__": resp.status_code}
         except Exception as exc:
             log.error("session.post_json: error en %s — %s", url, exc)
             return None
 
     async def close(self) -> None:
-        await self._ctx.close()
+        await self._session.close()
 
 
 async def create_zonaprop_session(
     warmup_url: str,
-    browser: Browser,
+    browser: Any,
     user_agent: str,
     base_url: str,
 ) -> ZonapropSession:
     """
-    Crea una sesión navegando warmup_url con Playwright para resolver
-    el Cloudflare challenge y obtener las cookies necesarias.
+    Crea una sesión con TLS fingerprint de Chrome.
+    Los parámetros warmup_url/browser/user_agent se mantienen por
+    compatibilidad con la firma anterior pero ya no se usan.
     """
-    ctx: BrowserContext = await browser.new_context(
-        user_agent=user_agent,
-        locale="es-AR",
-        extra_http_headers={
-            "Accept-Language": "es-AR,es;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Origin": base_url,
-            "Referer": warmup_url,
-        },
-    )
-
-    log.info("session_manager: navegando %s para resolver Cloudflare…", warmup_url)
-    page = await ctx.new_page()
-    try:
-        # "load" espera que el JS ejecute (necesario para el challenge de Cloudflare).
-        # Si falla por timeout (IP muy bloqueada), lo capturamos y continuamos.
-        try:
-            await page.goto(warmup_url, wait_until="load", timeout=30_000)
-        except Exception as nav_exc:
-            log.warning("session_manager: navegación falló (%s) — continuando con cookies parciales", nav_exc)
-
-        # Esperar a que el JS challenge de Cloudflare complete
-        await page.wait_for_timeout(_WARMUP_WAIT_MS)
-
-        cookies = await ctx.cookies()
-        cf_ok = any(c["name"] == "cf_clearance" for c in cookies)
-        log.info(
-            "session_manager: %d cookies — cf_clearance=%s",
-            len(cookies),
-            "✓" if cf_ok else "✗",
-        )
-        if not cf_ok:
-            log.warning("session_manager: cf_clearance no obtenida — las API calls pueden fallar con 403")
-    finally:
-        await page.close()
-
-    return ZonapropSession(ctx, cf_clearance=cf_ok)
+    log.info("session_manager: creando sesión curl_cffi (Chrome TLS fingerprint)")
+    session = AsyncSession()
+    return ZonapropSession(session)
