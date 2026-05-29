@@ -134,25 +134,39 @@ async def _build_tree(
 
 
 def _make_children(node: SegmentNode, cfg) -> list[SegmentNode]:
-    """Retorna los dos hijos del nodo, o lista vacía si no se puede subdividir."""
-    surface_range = node.surface_max - node.surface_min
-    price_range = node.price_max - node.price_min
+    """
+    Retorna los dos hijos del nodo según la prioridad configurada,
+    o lista vacía si no se puede subdividir en ninguna dimensión.
+    Menor número = mayor prioridad.
+    """
+    candidates: list[tuple[int, str]] = []
 
+    surface_range = node.surface_max - node.surface_min
     if cfg.surface_split_enabled and surface_range >= cfg.min_surface_range_m2 * 2:
+        candidates.append((cfg.surface_split_priority, "surface"))
+
+    price_range = node.price_max - node.price_min
+    if cfg.price_split_enabled and price_range >= cfg.min_price_range * 2:
+        candidates.append((cfg.price_split_priority, "price"))
+
+    if not candidates:
+        return []
+
+    candidates.sort(key=lambda x: x[0])
+    dimension = candidates[0][1]
+
+    if dimension == "surface":
         mid = (node.surface_min + node.surface_max) / 2
         return [
             _child(node, surface_min=node.surface_min, surface_max=mid),
             _child(node, surface_min=mid, surface_max=node.surface_max),
         ]
-
-    if cfg.price_split_enabled and price_range >= cfg.min_price_range * 2:
+    else:
         mid = (node.price_min + node.price_max) / 2
         return [
             _child(node, price_min=node.price_min, price_max=mid),
             _child(node, price_min=mid, price_max=node.price_max),
         ]
-
-    return []
 
 
 def _child(
