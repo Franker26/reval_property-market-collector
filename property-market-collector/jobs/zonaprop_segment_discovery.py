@@ -72,19 +72,19 @@ async def _run(args: argparse.Namespace) -> int:
     if args.operations:
         cfg.operations = {k: v for k, v in cfg.operations.items() if k in args.operations}
     if args.provinces:
-        cfg.provinces = {k: v for k, v in cfg.provinces.items() if k in args.provinces}
+        cfg.locations = {k: v for k, v in cfg.locations.items() if k in args.provinces}
 
     if not cfg.operations:
         log.error("No hay operaciones configuradas. Verificar config o parámetros --operations.")
         return 1
-    if not cfg.provinces:
+    if not cfg.locations:
         log.error("No hay provincias configuradas. Verificar config o parámetros --provinces.")
         return 1
 
     log.info("=" * 70)
     log.info("Zonaprop segment discovery — iniciando")
     log.info("  operaciones : %s", list(cfg.operations.keys()))
-    log.info("  provincias  : %d configuradas", len(cfg.provinces))
+    log.info("  provincias  : %d configuradas", len(cfg.locations))
     log.info("  umbral      : %d resultados/segmento", cfg.max_results_per_segment)
     log.info("  max_depth   : %d", cfg.max_depth)
     log.info("  dry_run     : %s", args.dry_run)
