@@ -8,7 +8,6 @@ curl_cffi>=0.7.0
 
 # Database
 sqlalchemy>=2.0.37
-alembic==1.13.3
 asyncpg>=0.31.0
 psycopg2-binary>=2.9.9
 
