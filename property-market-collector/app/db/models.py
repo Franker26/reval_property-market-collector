@@ -21,6 +21,11 @@ class Base(DeclarativeBase):
 class MarketSegment(Base):
     __tablename__ = "market_segments"
     __table_args__ = (
+        UniqueConstraint(
+            "portal", "operation_key", "province_key",
+            "price_min", "price_max", "surface_min", "surface_max",
+            name="uq_market_segments_boundaries",
+        ),
         Index("idx_market_segments_portal_op_prov", "portal", "operation_key", "province_key"),
         Index("idx_market_segments_leaf", "is_leaf", "portal"),
     )
@@ -216,6 +221,34 @@ class CollectionRun(Base):
     source: Mapped[Optional["MarketSource"]] = relationship(back_populates="runs")
     errors: Mapped[list["CollectionError"]] = relationship(back_populates="run")
     discovery_events: Mapped[list["DiscoveryEvent"]] = relationship(back_populates="run")
+
+
+class UrlDiscoverySegmentRun(Base):
+    __tablename__ = "url_discovery_segment_runs"
+    __table_args__ = (
+        Index("idx_url_discovery_runs_status_seg", "status", "segment_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    segment_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("market_segments.id"), nullable=False, unique=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
+
+    pages_scanned: Mapped[Optional[int]] = mapped_column(Integer, default=0)
+    listings_found: Mapped[Optional[int]] = mapped_column(Integer, default=0)
+    new_count: Mapped[Optional[int]] = mapped_column(Integer, default=0)
+    changed_count: Mapped[Optional[int]] = mapped_column(Integer, default=0)
+
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[Optional[str]] = mapped_column(Text)
+
+    started_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
+    completed_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
+    locked_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
+
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    segment: Mapped["MarketSegment"] = relationship()
 
 
 class CollectionError(Base):

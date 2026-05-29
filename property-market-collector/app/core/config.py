@@ -3,20 +3,16 @@ from __future__ import annotations
 
 import os
 from functools import lru_cache
-from typing import Optional
 
 
 class Settings:
     app_env: str
     database_url: str
     sync_database_url: str
-    redis_url: str
     service_token: str
 
     # Colector
     collector_timezone: str
-    collector_allowed_start_hour: int
-    collector_allowed_end_hour: int
 
     # Zonaprop
     zonaprop_base_url: str
@@ -25,9 +21,10 @@ class Settings:
     zonaprop_warmup_url: str
     zonaprop_user_agent: str
 
-    # Flags de escritura
-    write_jsonl_output: bool
-    write_database: bool
+    # Rate limiter de url_discovery (Zonaprop API)
+    zonaprop_url_discovery_min_delay: float
+    zonaprop_url_discovery_max_delay: float
+    zonaprop_url_discovery_burst_limit: int
 
     def __init__(self) -> None:
         self.app_env = os.getenv("APP_ENV", "development")
@@ -39,17 +36,10 @@ class Settings:
             "SYNC_DATABASE_URL",
             "postgresql://reval:reval@localhost:5432/reval_mi",
         )
-        self.redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
         self.service_token = os.getenv("SERVICE_TOKEN", "")
 
         self.collector_timezone = os.getenv(
             "COLLECTOR_TIMEZONE", "America/Argentina/Buenos_Aires"
-        )
-        self.collector_allowed_start_hour = int(
-            os.getenv("COLLECTOR_ALLOWED_START_HOUR", "9")
-        )
-        self.collector_allowed_end_hour = int(
-            os.getenv("COLLECTOR_ALLOWED_END_HOUR", "22")
         )
 
         self.zonaprop_base_url = os.getenv(
@@ -72,11 +62,14 @@ class Settings:
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         )
 
-        self.write_jsonl_output = (
-            os.getenv("WRITE_JSONL_OUTPUT", "true").lower() == "true"
+        self.zonaprop_url_discovery_min_delay = float(
+            os.getenv("ZONAPROP_URL_DISCOVERY_MIN_DELAY", "3")
         )
-        self.write_database = (
-            os.getenv("WRITE_DATABASE", "true").lower() == "true"
+        self.zonaprop_url_discovery_max_delay = float(
+            os.getenv("ZONAPROP_URL_DISCOVERY_MAX_DELAY", "9")
+        )
+        self.zonaprop_url_discovery_burst_limit = int(
+            os.getenv("ZONAPROP_URL_DISCOVERY_BURST_LIMIT", "10")
         )
 
     @property

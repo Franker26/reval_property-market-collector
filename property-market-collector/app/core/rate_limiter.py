@@ -30,15 +30,20 @@ class _SourceState:
     minute_start: float = field(default_factory=time.monotonic)
 
 
-_DEFAULT_CONFIGS: dict[str, RateLimiterConfig] = {
-    "zonaprop_api": RateLimiterConfig(
+def _zonaprop_api_config() -> RateLimiterConfig:
+    from app.core.config import get_settings
+    s = get_settings()
+    return RateLimiterConfig(
         max_concurrency=2,
-        min_delay_seconds=3.0,
-        max_delay_seconds=9.0,
-        burst_limit_per_minute=10,
+        min_delay_seconds=s.zonaprop_url_discovery_min_delay,
+        max_delay_seconds=s.zonaprop_url_discovery_max_delay,
+        burst_limit_per_minute=s.zonaprop_url_discovery_burst_limit,
         max_errors_before_cooldown=5,
         cooldown_minutes=30,
-    ),
+    )
+
+
+_DEFAULT_CONFIGS: dict[str, RateLimiterConfig] = {
     "zonaprop_browser": RateLimiterConfig(
         max_concurrency=1,
         min_delay_seconds=8.0,
@@ -148,5 +153,7 @@ _limiters: dict[str, RateLimiter] = {}
 
 def get_rate_limiter(source_key: str, config: Optional[RateLimiterConfig] = None) -> RateLimiter:
     if source_key not in _limiters:
+        if config is None and source_key == "zonaprop_api":
+            config = _zonaprop_api_config()
         _limiters[source_key] = RateLimiter(source_key, config)
     return _limiters[source_key]

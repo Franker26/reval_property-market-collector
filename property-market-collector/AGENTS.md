@@ -2,9 +2,12 @@
 
 ## Contexto del proyecto
 
-Microservicio Python (FastAPI + asyncio) que extrae datos estructurados de publicaciones inmobiliarias a partir de URLs. Soporta 11 portales argentinos. Expone un único endpoint de extracción: `POST /extract`.
+Pipeline de market intelligence inmobiliario (FastAPI + asyncio + PostgreSQL). Tiene dos responsabilidades:
 
-**No implementa búsqueda.** Las URLs a extraer las provee el sistema consumidor. Este servicio es el componente de captura de un sistema de market intelligence que acumula snapshots históricos de propiedades.
+1. **Extracción por URL** (`POST /extract`) — dado una URL, extrae datos estructurados de la publicación
+2. **Discovery autónomo** — descubre y trackea publicaciones de forma autónoma a través de un árbol de segmentos precio × superficie
+
+**No implementa búsqueda.** El discovery pipeline descubre URLs directamente desde la API del portal.
 
 → Arquitectura detallada: [docs/architecture.md](docs/architecture.md)
 → Convenciones: [docs/conventions.md](docs/conventions.md)
@@ -14,31 +17,28 @@ Microservicio Python (FastAPI + asyncio) que extrae datos estructurados de publi
 ## Estructura crítica
 
 ```
-main.py                  ← FastAPI app, endpoints, lifespan (Playwright)
-sources/
-  base.py                ← clase abstracta BaseSource (LEER ANTES de tocar portales)
-  models.py              ← PropertyListing
-  _common.py             ← fetch_html, parse_ldjson, slugify
-  browser.py             ← singleton Playwright, usar browser_page()
-  <portal>.py            ← un archivo por portal
+main.py                          ← FastAPI app, /health, /extract, /logs
+app/core/config.py               ← Settings (env vars centralizadas)
+app/db/models.py                 ← ORM: MarketSegment, ListingEntity, UrlDiscoverySegmentRun, etc.
+app/repositories/                ← Data access layer (un módulo por entidad)
+app/services/discovery_service.py← Orquesta el pipeline de discovery
+app/services/scheduler_service.py← APScheduler (2 jobs: sábados + L-V)
+sources/base.py                  ← BaseSource (leer antes de tocar portales)
+sources/models.py                ← PropertyListing
+sources/_common.py               ← fetch_html, parse_ldjson
+sources/browser.py               ← singleton Playwright, usar browser_page()
+discovery/engine/                ← engines genéricos portal-agnostic
+discovery/zonaprop/              ← implementaciones específicas de Zonaprop
 ```
 
 ## Reglas para modificar código
 
-1. **No cambiar la firma de `BaseSource`** sin actualizar todos los portales que la implementan.
+1. **No cambiar la firma de `BaseSource`** sin actualizar todos los portales.
 2. **No instanciar `async_playwright()` directamente** — usar `browser_page()` de `browser.py`.
-3. **Todos los campos de `PropertyListing` son opcionales** — retornar `None` cuando el dato no está disponible, nunca lanzar excepción por dato faltante.
-4. **No agregar endpoints de búsqueda ni endpoints específicos por portal** — el servicio expone únicamente `POST /extract`.
+3. **Todos los campos de `PropertyListing` son opcionales** — retornar `None` cuando el dato no está disponible.
+4. **`upsert_segment()` es idempotente** por `uq_market_segments_boundaries` — nunca hacer INSERT directo a `market_segments`.
 5. No agregar dependencias sin actualizar `requirements.txt`.
-
-## Navegación con codegraph
-
-El proyecto tiene codegraph indexado en `.codegraph/`. Si tu entorno lo soporta, usalo para:
-- Encontrar dónde se define un símbolo (`BaseSource`, `PropertyListing`, etc.)
-- Ver qué archivos llaman a `fetch_html` o `browser_page`
-- Navegar el grafo de llamadas de un portal específico
-
----
+6. Nuevas env vars van en `app/core/config.py` (Settings) y en `.env.example`.
 
 ## Flujo de extracción
 
@@ -49,11 +49,24 @@ POST /extract
               └─ source.extract(url, client) → PropertyListing
 ```
 
+## Flujo de discovery
+
+```
+scheduler → run_segment_discovery() [sábados]
+  └─ Árbol adaptativo → market_segments (upsert por boundaries)
+  └─ sync_pending_segment_runs() → url_discovery_segment_runs
+
+scheduler → run_url_discovery_window(stop_at) [L-V]
+  └─ Consume runs pending → pagina API → upsert listing_entities
+```
+
 ## Comandos de verificación
 
 ```bash
-docker compose up --build          # levantar
-curl http://localhost:8100/health  # smoke test
+docker compose up --build
+curl http://localhost:8200/health
+curl http://localhost:8200/logs
+curl -X POST http://localhost:8200/discovery/segment-discovery
 ```
 
 Para probar endpoints completos usar la colección Bruno en `bruno/`.

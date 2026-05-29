@@ -6,6 +6,12 @@ import httpx
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
+from app.core.logging_setup import configure_root_logger
+from app.core.log_buffer import setup_log_buffer
+
+configure_root_logger()
+setup_log_buffer()
+
 import sources
 from sources import browser as _browser_mod
 
@@ -39,9 +45,14 @@ async def lifespan(app: FastAPI):
 
     if _db_available and WRITE_DATABASE:
         try:
+            from app.db.models import Base
             from app.db.seed import seed_sources
-            from app.db.session import get_async_session_factory
+            from app.db.session import get_async_engine, get_async_session_factory
             from app.services.scheduler_service import start_scheduler
+
+            engine = get_async_engine()
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
 
             factory = get_async_session_factory()
             async with factory() as session:
@@ -65,6 +76,11 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Reval Market Intelligence", lifespan=lifespan)
+
+# ── Router de logs (siempre disponible) ───────────────────────────────────────
+
+from app.routers import logs as logs_router
+app.include_router(logs_router.router)
 
 # ── Routers de la API interna (disponibles solo si hay DB) ────────────────────
 
