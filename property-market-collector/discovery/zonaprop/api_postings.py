@@ -3,13 +3,12 @@ discovery.zonaprop.api_postings
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Discovery de publicaciones de Zonaprop vía API interna POST /rplis-api/postings.
 
-Usa Playwright para el warmup (resolver Cloudflare) y para las requests de API,
-ya que httpx es bloqueado por el TLS fingerprint aunque tenga cf_clearance.
-
-Playwright's context.request hace HTTP real sin renderizar JS — es liviano.
+Usa curl_cffi para impersonar el TLS fingerprint de Chrome — bypasa Cloudflare
+sin necesidad de Playwright ni warmup de sesión.
 
 Paginación confirmada via DevTools: parámetro `pagina` (entero, base 1).
-Respuesta confirmada: `listPostings`, `paging.total`.
+Respuesta confirmada: `listPostings`, `paging.total`, 30 resultados/página.
+Total disponible: ~604.890 propiedades, 20.163 páginas.
 """
 
 from __future__ import annotations
@@ -174,7 +173,6 @@ async def discover(
     Returns:
         dict con stats: pages_ok, pages_failed, total_found, total_reported.
     """
-    from sources.browser import get_browser
     from sources.session_manager import create_zonaprop_session
 
     settings = get_settings()
@@ -188,19 +186,16 @@ async def discover(
         "stopped_early": False,
     }
 
-    browser = await get_browser()
+    # curl_cffi no necesita warmup — el TLS fingerprint de Chrome bypasa Cloudflare directamente
     session = await create_zonaprop_session(
         warmup_url=settings.zonaprop_warmup_url,
-        browser=browser,
+        browser=None,
         user_agent=settings.zonaprop_user_agent,
         base_url=settings.zonaprop_base_url,
     )
 
     try:
-        if not session.cf_clearance:
-            log.warning("api_postings: sin cf_clearance — la IP puede estar bloqueada en Cloudflare")
-
-        await asyncio.sleep(2)
+        await asyncio.sleep(1)
 
         for page_num in range(1, max_pages + 1):
             try:

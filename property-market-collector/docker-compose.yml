@@ -6,5 +6,51 @@ services:
       - "8200:8200"
     environment:
       - SERVICE_TOKEN=${SERVICE_TOKEN:-}
+      - DATABASE_URL=postgresql+asyncpg://reval:reval@postgres:5432/reval_mi
+      - SYNC_DATABASE_URL=postgresql://reval:reval@postgres:5432/reval_mi
+      - REDIS_URL=redis://redis:6379/0
+      - COLLECTOR_TIMEZONE=${COLLECTOR_TIMEZONE:-America/Argentina/Buenos_Aires}
+      - COLLECTOR_ALLOWED_START_HOUR=${COLLECTOR_ALLOWED_START_HOUR:-9}
+      - COLLECTOR_ALLOWED_END_HOUR=${COLLECTOR_ALLOWED_END_HOUR:-22}
+      - ZONAPROP_BASE_URL=${ZONAPROP_BASE_URL:-https://www.zonaprop.com.ar}
+      - ZONAPROP_API_POSTINGS_URL=${ZONAPROP_API_POSTINGS_URL:-https://www.zonaprop.com.ar/rplis-api/postings}
+      - ZONAPROP_ENABLE_SESSION_WARMUP=${ZONAPROP_ENABLE_SESSION_WARMUP:-true}
+      - ZONAPROP_WARMUP_URL=${ZONAPROP_WARMUP_URL:-https://www.zonaprop.com.ar/inmuebles-venta.html}
+      - ZONAPROP_USER_AGENT=${ZONAPROP_USER_AGENT:-}
+      - WRITE_JSONL_OUTPUT=${WRITE_JSONL_OUTPUT:-true}
+      - WRITE_DATABASE=${WRITE_DATABASE:-true}
     volumes:
       - ./data:/app/data:z
+      - ./outputs:/app/outputs:z
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: reval
+      POSTGRES_PASSWORD: reval
+      POSTGRES_DB: reval_mi
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U reval -d reval_mi"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+volumes:
+  postgres_data:
+  redis_data:
