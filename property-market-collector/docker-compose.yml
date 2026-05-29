@@ -8,17 +8,16 @@ services:
       - SERVICE_TOKEN=${SERVICE_TOKEN:-}
       - DATABASE_URL=postgresql+asyncpg://reval:reval@postgres:5432/reval_mi
       - SYNC_DATABASE_URL=postgresql://reval:reval@postgres:5432/reval_mi
-      - REDIS_URL=redis://redis:6379/0
       - COLLECTOR_TIMEZONE=${COLLECTOR_TIMEZONE:-America/Argentina/Buenos_Aires}
-      - COLLECTOR_ALLOWED_START_HOUR=${COLLECTOR_ALLOWED_START_HOUR:-9}
-      - COLLECTOR_ALLOWED_END_HOUR=${COLLECTOR_ALLOWED_END_HOUR:-22}
       - ZONAPROP_BASE_URL=${ZONAPROP_BASE_URL:-https://www.zonaprop.com.ar}
       - ZONAPROP_API_POSTINGS_URL=${ZONAPROP_API_POSTINGS_URL:-https://www.zonaprop.com.ar/rplis-api/postings}
       - ZONAPROP_ENABLE_SESSION_WARMUP=${ZONAPROP_ENABLE_SESSION_WARMUP:-true}
       - ZONAPROP_WARMUP_URL=${ZONAPROP_WARMUP_URL:-https://www.zonaprop.com.ar/inmuebles-venta.html}
       - ZONAPROP_USER_AGENT=${ZONAPROP_USER_AGENT:-}
-      - WRITE_JSONL_OUTPUT=${WRITE_JSONL_OUTPUT:-true}
       - WRITE_DATABASE=${WRITE_DATABASE:-true}
+      - ZONAPROP_URL_DISCOVERY_MIN_DELAY=${ZONAPROP_URL_DISCOVERY_MIN_DELAY:-3}
+      - ZONAPROP_URL_DISCOVERY_MAX_DELAY=${ZONAPROP_URL_DISCOVERY_MAX_DELAY:-9}
+      - ZONAPROP_URL_DISCOVERY_BURST_LIMIT=${ZONAPROP_URL_DISCOVERY_BURST_LIMIT:-10}
     volumes:
       - /srv/data/reval_mi/app/data:/app/data:z
       - /srv/data/reval_mi/app/outputs:/app/outputs:z
@@ -42,11 +41,3 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
-
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-    volumes:
-      - /srv/data/reval_mi/redis:/data
