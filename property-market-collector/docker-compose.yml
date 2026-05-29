@@ -20,8 +20,8 @@ services:
       - WRITE_JSONL_OUTPUT=${WRITE_JSONL_OUTPUT:-true}
       - WRITE_DATABASE=${WRITE_DATABASE:-true}
     volumes:
-      - ./data:/app/data:z
-      - ./outputs:/app/outputs:z
+      - /srv/data/reval_mi/app/data:/app/data:z
+      - /srv/data/reval_mi/app/outputs:/app/outputs:z
     depends_on:
       postgres:
         condition: service_healthy
@@ -34,7 +34,7 @@ services:
       POSTGRES_PASSWORD: reval
       POSTGRES_DB: reval_mi
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - /srv/data/reval_mi/postgres:/var/lib/postgresql/data
     ports:
       - "5432:5432"
     healthcheck:
@@ -49,8 +49,4 @@ services:
     ports:
       - "6379:6379"
     volumes:
-      - redis_data:/data
-
-volumes:
-  postgres_data:
-  redis_data:
+      - /srv/data/reval_mi/redis:/data
