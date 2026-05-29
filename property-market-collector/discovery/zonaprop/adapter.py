@@ -13,11 +13,39 @@ El engine genérico llama estos métodos sin saber nada de Zonaprop.
 from __future__ import annotations
 
 import logging
+import re
+from datetime import datetime
 from typing import Optional
 
 from app.core.config import get_settings
 
 log = logging.getLogger(__name__)
+
+_SELLER_TYPE = {"1": "particular", "2": "inmobiliaria", "3": "developer"}
+_STATUS_MAP = {"ONLINE": "active", "OFFLINE": "offline", "PAUSED": "paused", "RESERVED": "reserved"}
+
+
+def _feat_int(features: dict, feature_id: str) -> Optional[int]:
+    """Extrae el valor entero de una feature por ID (CFT100, CFT1, etc.)."""
+    feat = features.get(feature_id)
+    if not feat:
+        return None
+    try:
+        return int(float(feat["value"]))
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+def _parse_datetime(s: Optional[str]) -> Optional[datetime]:
+    """Parsea ISO 8601 con offset estilo -0400 (sin separador de colon)."""
+    if not s:
+        return None
+    # Normalizar -0400 → -04:00 para fromisoformat de Python
+    normalized = re.sub(r'([+-])(\d{2})(\d{2})$', r'\1\2:\3', s)
+    try:
+        return datetime.fromisoformat(normalized)
+    except (ValueError, TypeError):
+        return None
 
 
 class ZonapropAdapter:
@@ -162,11 +190,15 @@ class ZonapropAdapter:
         return []
 
     def parse_posting(self, raw: dict) -> Optional[dict]:
-        """Normaliza un posting crudo a {external_id, canonical_url, operation_type, property_type}."""
+        """
+        Normaliza un posting crudo al schema genérico de listing_entities.
+        Devuelve None si el posting no tiene external_id válido.
+        """
         external_id = str(raw.get("postingId") or raw.get("id") or "").strip()
         if not external_id:
             return None
 
+        # URL canónica
         raw_url = raw.get("url") or raw.get("link") or ""
         base = self.base_url
         if raw_url.startswith("/"):
@@ -176,15 +208,113 @@ class ZonapropAdapter:
         else:
             canonical_url = f"{base}/propiedades/{external_id}.html"
 
-        op_raw = raw.get("operationType") or raw.get("operation") or {}
-        operation_type = (op_raw.get("name") or "").lower() if isinstance(op_raw, dict) else None
+        # Tipo de operación y precio — vienen en priceOperationTypes[0]
+        price_ops = raw.get("priceOperationTypes") or []
+        price_op = price_ops[0] if price_ops else {}
+        op_raw = price_op.get("operationType") or {}
+        operation_type = (op_raw.get("name") or "").lower() or None
 
-        type_raw = raw.get("propertyType") or raw.get("realestateType") or raw.get("type") or {}
-        property_type = (type_raw.get("name") or "").lower() if isinstance(type_raw, dict) else None
+        prices = price_op.get("prices") or []
+        first_price = prices[0] if prices else {}
+        price_amount = first_price.get("amount")       # int, e.g. 45000
+        price_currency = first_price.get("currency")   # "USD" | "ARS"
+
+        # Expensas
+        exp = raw.get("expenses")
+        if exp and exp.get("amount"):
+            expenses_amount = exp["amount"]
+            expenses_currency = exp.get("currency")
+        else:
+            expenses_amount = None
+            expenses_currency = None
+
+        # Tipo de propiedad
+        type_raw = (
+            raw.get("realEstateType")
+            or raw.get("propertyType")
+            or raw.get("realestateType")
+            or {}
+        )
+        property_type = (type_raw.get("name") or "").lower() or None
+
+        # Features: mainFeatures es un dict {featureId: {value, label, ...}}
+        features = raw.get("mainFeatures") or {}
+        surface_total   = _feat_int(features, "CFT100")  # Superficie total m²
+        surface_covered = _feat_int(features, "CFT101")  # Superficie cubierta m²
+        rooms           = _feat_int(features, "CFT1")    # Ambientes
+        bedrooms        = _feat_int(features, "CFT2")    # Dormitorios
+        bathrooms       = _feat_int(features, "CFT3")    # Baños
+        garages         = _feat_int(features, "CFT7")    # Cocheras
+
+        # Ubicación
+        loc_data = raw.get("postingLocation") or {}
+        address_info = loc_data.get("address") or {}
+        address = address_info.get("name")
+
+        geo = (loc_data.get("postingGeolocation") or {}).get("geolocation") or {}
+        lat = geo.get("latitude")
+        lon = geo.get("longitude")
+
+        # Árbol jerárquico de ubicación: depth 3=ZONA, 2=CIUDAD, 1=PROVINCIA
+        loc_levels: dict[int, str] = {}
+        node = loc_data.get("location") or {}
+        while node:
+            depth = node.get("depth")
+            name = node.get("name")
+            if depth is not None and name:
+                loc_levels[depth] = name
+            node = node.get("parent") or {}
+        neighborhood  = loc_levels.get(3)
+        city          = loc_levels.get(2)
+        province_name = loc_levels.get(1)
+
+        # Vendedor / publisher
+        pub = raw.get("publisher") or {}
+        seller_id   = pub.get("publisherId")
+        seller_name = pub.get("name")
+        seller_type = _SELLER_TYPE.get(str(pub.get("publisherTypeId") or ""))
+
+        # Estado y fecha de modificación
+        status = _STATUS_MAP.get(raw.get("status") or "", "unknown")
+        source_modified_at = _parse_datetime(raw.get("modified_date"))
+
+        # extra_data: campos Zonaprop-específicos, sin imágenes ni multimedia
+        extra: dict = {}
+        addr_vis = address_info.get("visibility")
+        if addr_vis:
+            extra["address_visibility"] = addr_vis
+        antiguedad = _feat_int(features, "CFT5")
+        if antiguedad is not None:
+            extra["antiguedad"] = antiguedad
+        orientacion = (features.get("1000029") or {}).get("value")
+        if orientacion:
+            extra["orientacion"] = orientacion
 
         return {
-            "external_id": external_id,
-            "canonical_url": canonical_url,
-            "operation_type": operation_type or None,
-            "property_type": property_type or None,
+            "external_id":        external_id,
+            "canonical_url":      canonical_url,
+            "operation_type":     operation_type,
+            "property_type":      property_type,
+            "status":             status,
+            "source_modified_at": source_modified_at,
+            "price_amount":       price_amount,
+            "price_currency":     price_currency,
+            "expenses_amount":    expenses_amount,
+            "expenses_currency":  expenses_currency,
+            "surface_total":      surface_total,
+            "surface_covered":    surface_covered,
+            "rooms":              rooms,
+            "bedrooms":           bedrooms,
+            "bathrooms":          bathrooms,
+            "garages":            garages,
+            "address":            address,
+            "lat":                lat,
+            "lon":                lon,
+            "neighborhood":       neighborhood,
+            "city":               city,
+            "province_name":      province_name,
+            "seller_id":          seller_id,
+            "seller_name":        seller_name,
+            "seller_type":        seller_type,
+            "extra_data":         extra or None,
         }

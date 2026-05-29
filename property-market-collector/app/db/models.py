@@ -83,39 +83,84 @@ class MarketSource(Base):
     discovery_events: Mapped[list["DiscoveryEvent"]] = relationship(back_populates="source")
 
 
-class ListingEntity(Base):
+# ── Payload mixin ─────────────────────────────────────────────────────────────
+# Ambas tablas (listing_entities y listing_snapshots) tienen los mismos campos
+# de payload. listing_entities = estado actual mutable. listing_snapshots = un
+# registro por cada cambio de estado (append-only).
+
+class _ListingPayloadMixin:
+    """Campos que representan el estado observable de una propiedad."""
+
+    # Disponibilidad
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="unknown")
+    source_modified_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
+
+    # Precio
+    price_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric)
+    price_currency: Mapped[Optional[str]] = mapped_column(Text)
+    expenses_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric)
+    expenses_currency: Mapped[Optional[str]] = mapped_column(Text)
+
+    # Superficie
+    surface_total: Mapped[Optional[Decimal]] = mapped_column(Numeric)
+    surface_covered: Mapped[Optional[Decimal]] = mapped_column(Numeric)
+
+    # Habitaciones
+    rooms: Mapped[Optional[int]] = mapped_column(Integer)
+    bedrooms: Mapped[Optional[int]] = mapped_column(Integer)
+    bathrooms: Mapped[Optional[int]] = mapped_column(Integer)
+    garages: Mapped[Optional[int]] = mapped_column(Integer)
+
+    # Ubicación
+    address: Mapped[Optional[str]] = mapped_column(Text)
+    lat: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 6))
+    lon: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 6))
+    neighborhood: Mapped[Optional[str]] = mapped_column(Text)
+    city: Mapped[Optional[str]] = mapped_column(Text)
+    province_name: Mapped[Optional[str]] = mapped_column(Text)
+
+    # Vendedor
+    seller_id: Mapped[Optional[str]] = mapped_column(Text)
+    seller_name: Mapped[Optional[str]] = mapped_column(Text)
+    seller_type: Mapped[Optional[str]] = mapped_column(Text)
+
+    # Campos portal-específicos que no mapean a columnas genéricas
+    extra_data: Mapped[Optional[dict]] = mapped_column(JSONB)
+
+
+class ListingEntity(_ListingPayloadMixin, Base):
     __tablename__ = "listing_entities"
     __table_args__ = (
         UniqueConstraint("source_id", "external_id", name="uq_listing_source_external"),
+        Index("idx_listing_entities_segment_status", "segment_id", "status"),
+        Index("idx_listing_entities_status", "status"),
     )
 
+    # Identidad
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     source_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("market_sources.id"), nullable=False)
     external_id: Mapped[str] = mapped_column(Text, nullable=False)
     canonical_url: Mapped[Optional[str]] = mapped_column(Text)
     segment_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("market_segments.id"))
-
     operation_type: Mapped[Optional[str]] = mapped_column(Text)
     property_type: Mapped[Optional[str]] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="unknown")
 
+    # Hash del payload actual — para detectar si algo cambió en el siguiente scan
+    content_hash: Mapped[Optional[str]] = mapped_column(Text)
+
+    # Lifecycle
     first_seen_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
     last_seen_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
-    last_success_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
-    last_error_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
     last_changed_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
-    last_snapshot_id: Mapped[Optional[int]] = mapped_column(BigInteger)
-
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     source: Mapped["MarketSource"] = relationship(back_populates="listings")
-    snapshots: Mapped[list["ListingSnapshot"]] = relationship(back_populates="listing", foreign_keys="[ListingSnapshot.listing_id]")
+    snapshots: Mapped[list["ListingSnapshot"]] = relationship(back_populates="listing")
     errors: Mapped[list["CollectionError"]] = relationship(back_populates="listing")
-    change_events: Mapped[list["ListingChangeEvent"]] = relationship(back_populates="listing")
 
 
-class ListingSnapshot(Base):
+class ListingSnapshot(_ListingPayloadMixin, Base):
     __tablename__ = "listing_snapshots"
     __table_args__ = (
         Index("idx_listing_snapshots_listing_captured", "listing_id", "captured_at"),
@@ -125,31 +170,10 @@ class ListingSnapshot(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     listing_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("listing_entities.id"), nullable=False)
     captured_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
-
-    payload_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    raw_payload_json: Mapped[Optional[dict]] = mapped_column(JSONB)
-
     content_hash: Mapped[str] = mapped_column(Text, nullable=False)
-    price_hash: Mapped[Optional[str]] = mapped_column(Text)
-    availability_hash: Mapped[Optional[str]] = mapped_column(Text)
-    location_hash: Mapped[Optional[str]] = mapped_column(Text)
-    media_hash: Mapped[Optional[str]] = mapped_column(Text)
-
-    price_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric)
-    price_currency: Mapped[Optional[str]] = mapped_column(Text)
-    expenses_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric)
-    expenses_currency: Mapped[Optional[str]] = mapped_column(Text)
-
-    surface_total: Mapped[Optional[Decimal]] = mapped_column(Numeric)
-    surface_covered: Mapped[Optional[Decimal]] = mapped_column(Numeric)
-    rooms: Mapped[Optional[Decimal]] = mapped_column(Numeric)
-    bedrooms: Mapped[Optional[Decimal]] = mapped_column(Numeric)
-    bathrooms: Mapped[Optional[Decimal]] = mapped_column(Numeric)
-    garages: Mapped[Optional[Decimal]] = mapped_column(Numeric)
-
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
 
-    listing: Mapped["ListingEntity"] = relationship(back_populates="snapshots", foreign_keys=[listing_id])
+    listing: Mapped["ListingEntity"] = relationship(back_populates="snapshots")
 
 
 class DiscoveryEvent(Base):
@@ -214,24 +238,3 @@ class CollectionError(Base):
 
     run: Mapped[Optional["CollectionRun"]] = relationship(back_populates="errors")
     listing: Mapped[Optional["ListingEntity"]] = relationship(back_populates="errors")
-
-
-
-class ListingChangeEvent(Base):
-    __tablename__ = "listing_change_events"
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    listing_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("listing_entities.id"), nullable=False)
-    previous_snapshot_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("listing_snapshots.id"))
-    new_snapshot_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("listing_snapshots.id"))
-
-    change_type: Mapped[str] = mapped_column(Text, nullable=False)
-    old_value: Mapped[Optional[dict]] = mapped_column(JSONB)
-    new_value: Mapped[Optional[dict]] = mapped_column(JSONB)
-
-    detected_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
-
-    listing: Mapped["ListingEntity"] = relationship(back_populates="change_events")
-    previous_snapshot: Mapped[Optional["ListingSnapshot"]] = relationship(foreign_keys=[previous_snapshot_id])
-    new_snapshot: Mapped[Optional["ListingSnapshot"]] = relationship(foreign_keys=[new_snapshot_id])

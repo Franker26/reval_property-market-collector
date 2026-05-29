@@ -118,20 +118,23 @@ async def _run(args: argparse.Namespace) -> int:
     else:
         async def _persist(postings: list[dict], page_num: int) -> None:
             nonlocal total_written
+            from app.repositories import snapshots as snap_repo
             async with factory() as sess:
                 async with sess.begin():
-                    for p in postings:
-                        entity = await listing_repo.upsert(
-                            session=sess,
-                            source_id=source_id,
-                            external_id=p["external_id"],
-                            canonical_url=p.get("canonical_url"),
-                            operation_type=p.get("operation_type"),
-                            property_type=p.get("property_type"),
-                        )
-                        seg_db_id = p.get("segment_db_id")
-                        if seg_db_id and entity.segment_id != seg_db_id:
-                            entity.segment_id = seg_db_id
+                    results = await listing_repo.upsert_batch(
+                        session=sess,
+                        source_id=source_id,
+                        postings=postings,
+                    )
+                    for entity, changed in results:
+                        if changed:
+                            posting = next(p for p in postings if p["external_id"] == entity.external_id)
+                            await snap_repo.create_from_posting(
+                                session=sess,
+                                listing_id=entity.id,
+                                posting=posting,
+                                content_hash=entity.content_hash,
+                            )
                     total_written += len(postings)
 
         async with factory() as session:

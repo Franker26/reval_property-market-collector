@@ -2,18 +2,23 @@
 """
 jobs/zonaprop_url_discovery.py
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Extrae URLs de publicaciones de Zonaprop paginando los segmentos hoja
+Extrae datos de publicaciones de Zonaprop paginando los segmentos hoja
 almacenados en la base de datos.
 
-Carga todos los segmentos hoja activos del portal y para cada uno
-pagina la API hasta agotar los resultados. Las publicaciones nuevas
-se insertan en listing_entities; las existentes actualizan last_seen_at.
+Por cada batch de 30 postings:
+  - CASO A: listing nuevo → INSERT en listing_entities + snapshot inicial
+  - CASO B: sin cambios → solo actualiza last_seen_at
+  - CASO C: cambió algo → actualiza listing_entities + nuevo snapshot
+
+Al finalizar cada segmento completo (sin stopped_early):
+  - CASO D: listings que no aparecieron → marcados como 'offline' + snapshot
 
 Uso:
     python jobs/zonaprop_url_discovery.py
     python jobs/zonaprop_url_discovery.py --operations compra
     python jobs/zonaprop_url_discovery.py --provinces capital_federal
-    python jobs/zonaprop_url_discovery.py --dry-run   # sin escribir a DB
+    python jobs/zonaprop_url_discovery.py --max-pages 2  # para pruebas
+    python jobs/zonaprop_url_discovery.py --dry-run      # sin escritura a DB
 """
 from __future__ import annotations
 
@@ -22,6 +27,7 @@ import asyncio
 import logging
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -44,7 +50,7 @@ _SOURCE_CODE = "zonaprop"
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Extrae URLs de publicaciones de Zonaprop desde segmentos hoja."
+        description="Extrae publicaciones de Zonaprop desde segmentos hoja."
     )
     p.add_argument("--operations", nargs="+", default=None)
     p.add_argument("--provinces", nargs="+", default=None)
@@ -74,6 +80,7 @@ async def _run(args: argparse.Namespace) -> int:
     from app.db.session import get_async_session_factory
     from app.repositories import market_segments as seg_repo
     from app.repositories import listings as listing_repo
+    from app.repositories import snapshots as snap_repo
 
     factory = get_async_session_factory()
 
@@ -86,7 +93,6 @@ async def _run(args: argparse.Namespace) -> int:
             province_key=args.provinces[0] if args.provinces and len(args.provinces) == 1 else None,
         )
 
-    # Filtrar por múltiples operaciones/provincias si corresponde
     if args.operations and len(args.operations) > 1:
         segments = [s for s in segments if s.operation_key in args.operations]
     if args.provinces and len(args.provinces) > 1:
@@ -95,6 +101,8 @@ async def _run(args: argparse.Namespace) -> int:
     if not segments:
         log.warning("No hay segmentos hoja activos para los filtros dados.")
         return 1
+
+    run_started_at = datetime.utcnow()
 
     log.info("=" * 70)
     log.info("Zonaprop URL discovery — iniciando")
@@ -105,13 +113,15 @@ async def _run(args: argparse.Namespace) -> int:
     log.info("=" * 70)
 
     start_time = time.monotonic()
-    total_written = 0
-    total_skipped = 0
+    total_new = 0
+    total_changed = 0
+    total_touched = 0
+    total_offline = 0
 
     if args.dry_run:
         async def _persist(postings: list[dict], page_num: int) -> None:
-            nonlocal total_written
-            total_written += len(postings)
+            nonlocal total_touched
+            total_touched += len(postings)
             log.debug("dry_run: %d postings en página %d", len(postings), page_num)
 
         agg = await run_url_discovery(
@@ -121,29 +131,55 @@ async def _run(args: argparse.Namespace) -> int:
         )
     else:
         async def _persist(postings: list[dict], page_num: int) -> None:
-            nonlocal total_written, total_skipped
+            nonlocal total_new, total_changed, total_touched
             async with factory() as session:
                 async with session.begin():
-                    for p in postings:
-                        entity = await listing_repo.upsert(
-                            session=session,
-                            source_id=source_id,
-                            external_id=p["external_id"],
-                            canonical_url=p.get("canonical_url"),
-                            operation_type=p.get("operation_type"),
-                            property_type=p.get("property_type"),
-                        )
-                        # Actualizar segment_id si cambió o era None
-                        seg_db_id = p.get("segment_db_id")
-                        if seg_db_id and entity.segment_id != seg_db_id:
-                            entity.segment_id = seg_db_id
-                    total_written += len(postings)
+                    results = await listing_repo.upsert_batch(
+                        session=session,
+                        source_id=source_id,
+                        postings=postings,
+                    )
+                    for entity, changed in results:
+                        if changed:
+                            if entity.first_seen_at == entity.last_seen_at:
+                                total_new += 1
+                            else:
+                                total_changed += 1
+                            await snap_repo.create_from_posting(
+                                session=session,
+                                listing_id=entity.id,
+                                posting=next(
+                                    p for p in postings
+                                    if p["external_id"] == entity.external_id
+                                ),
+                                content_hash=entity.content_hash,
+                            )
+                        else:
+                            total_touched += 1
 
         agg = await run_url_discovery(
             segments=segments,
             persist_fn=_persist,
             max_pages_per_segment=args.max_pages,
         )
+
+        # CASO D: marcar offline los que no aparecieron en scans completos
+        for seg_stats in agg.get("per_segment", []):
+            if not seg_stats["stopped_early"] and seg_stats["segment_id"] is not None:
+                async with factory() as session:
+                    async with session.begin():
+                        n = await listing_repo.mark_offline_in_segment(
+                            session=session,
+                            segment_id=seg_stats["segment_id"],
+                            run_started_at=run_started_at,
+                        )
+                        total_offline += n
+                        if n:
+                            log.info(
+                                "offline: %d listings marcados en segmento %d (%s/%s)",
+                                n, seg_stats["segment_id"],
+                                seg_stats["op_key"], seg_stats["loc_key"],
+                            )
 
     elapsed = time.monotonic() - start_time
     elapsed_str = f"{int(elapsed // 60)}m {int(elapsed % 60)}s"
@@ -152,8 +188,11 @@ async def _run(args: argparse.Namespace) -> int:
     log.info("RESUMEN")
     log.info("  segmentos procesados : %d", agg["segments_processed"])
     log.info("  segmentos fallidos   : %d", agg["segments_failed"])
-    log.info("  publicaciones        : %d", agg["total_found"])
-    log.info("  escritas en DB       : %d", total_written)
+    log.info("  publicaciones vistas : %d", agg["total_found"])
+    log.info("  nuevas               : %d", total_new)
+    log.info("  actualizadas         : %d", total_changed)
+    log.info("  sin cambios          : %d", total_touched)
+    log.info("  marcadas offline     : %d", total_offline)
     log.info("  duración             : %s", elapsed_str)
     log.info("  dry_run              : %s", args.dry_run)
     log.info("=" * 70)

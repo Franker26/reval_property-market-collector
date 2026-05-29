@@ -32,8 +32,8 @@ async def discover_segment(
     """
     Pagina la API del portal para un segmento y extrae publicaciones.
 
-    Cada posting pasado a *persist_fn* incluye:
-    external_id, canonical_url, operation_type, property_type, segment_db_id.
+    Cada posting pasado a *persist_fn* es el dict completo devuelto por
+    adapter.parse_posting() más la key "segment_db_id".
 
     Returns: stats con pages_ok, pages_failed, total_found, stopped_early.
     """
@@ -123,6 +123,8 @@ async def run_url_discovery(
 
     *segments* puede ser lista de SegmentNode o de MarketSegment (ORM).
     Ambos exponen los atributos necesarios (operation_value, location_value, etc.).
+
+    Returns: agg stats + per_segment list con stopped_early por segmento.
     """
     rate = get_rate_limiter(adapter.rate_limiter_key)
     session = await adapter.create_session()
@@ -131,6 +133,7 @@ async def run_url_discovery(
         "segments_processed": 0,
         "segments_failed": 0,
         "total_found": 0,
+        "per_segment": [],
     }
 
     try:
@@ -170,10 +173,21 @@ async def run_url_discovery(
             if stats["pages_failed"] > 0 and stats["total_found"] == 0:
                 agg["segments_failed"] += 1
 
+            agg["per_segment"].append({
+                "segment_id": seg_db_id,
+                "op_key": op_key,
+                "loc_key": loc_key,
+                "stopped_early": stats["stopped_early"],
+                "total_found": stats["total_found"],
+                "pages_ok": stats["pages_ok"],
+                "pages_failed": stats["pages_failed"],
+            })
+
             log.info(
-                "url_discovery[%s]: op=%s loc=%s → %d encontradas (ok=%d fail=%d)",
+                "url_discovery[%s]: op=%s loc=%s → %d encontradas (ok=%d fail=%d%s)",
                 adapter.portal, op_key, loc_key, stats["total_found"],
                 stats["pages_ok"], stats["pages_failed"],
+                " STOPPED_EARLY" if stats["stopped_early"] else "",
             )
     finally:
         await session.close()
