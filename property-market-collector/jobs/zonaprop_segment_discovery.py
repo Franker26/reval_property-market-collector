@@ -102,7 +102,7 @@ async def _run(args: argparse.Namespace) -> int:
             if node.is_oversized:
                 oversized_count += 1
 
-        leaves = await run_segment_discovery(cfg, portal="zonaprop", on_leaf_found=_on_leaf)
+        leaves = await run_segment_discovery(cfg, on_leaf_found=_on_leaf)
     else:
         from app.db.session import get_async_session_factory
         from app.repositories import market_segments as seg_repo
@@ -154,7 +154,7 @@ async def _run(args: argparse.Namespace) -> int:
                         surface_max=node.surface_max,
                     )
 
-        leaves = await run_segment_discovery(cfg, portal="zonaprop", on_leaf_found=_on_leaf)
+        leaves = await run_segment_discovery(cfg, on_leaf_found=_on_leaf)
 
     elapsed = time.monotonic() - start_time
     elapsed_str = f"{int(elapsed // 60)}m {int(elapsed % 60)}s"
