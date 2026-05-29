@@ -7,6 +7,7 @@ Scheduler: orquesta el pipeline de 3 fases de discovery.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -24,9 +25,13 @@ _scheduler: AsyncIOScheduler | None = None
 
 
 async def _job_segment_discovery() -> None:
-    if not is_within_operational_window():
-        log.info("scheduler: fuera de ventana — omitiendo segment_discovery")
-        return
+    import random
+    delay_minutes = random.uniform(0, 240)  # hasta 4 horas → ventana 10:00–14:00
+    log.info(
+        "scheduler: segment_discovery programado — arranca en %.0f minutos (ventana 10:00–14:00)",
+        delay_minutes,
+    )
+    await asyncio.sleep(delay_minutes * 60)
     log.info("scheduler: iniciando segment_discovery")
     try:
         from app.services.discovery_service import run_segment_discovery
@@ -71,10 +76,12 @@ def get_scheduler() -> AsyncIOScheduler:
         settings = get_settings()
         _scheduler = AsyncIOScheduler(timezone=settings.collector_timezone)
 
-        # Semanal: lunes 02:00 AM (fuera de horario pico, antes del día laboral)
+        # Semanal: sábados 10:00 AM — el job duerme un offset aleatorio (0–4hs)
+        # para ejecutar en algún momento entre las 10:00 y las 14:00
         _scheduler.add_job(
             _job_segment_discovery,
-            trigger=CronTrigger(day_of_week="mon", hour=2, minute=0),
+            trigger=CronTrigger(day_of_week="sat", hour=10, minute=0,
+                                timezone=settings.collector_timezone),
             id="weekly_segment_discovery",
             replace_existing=True,
             max_instances=1,
