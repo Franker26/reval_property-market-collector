@@ -16,6 +16,12 @@ from app.core.hashing import (
 from app.db.models import ListingSnapshot
 
 
+def _jsonable(obj: dict) -> dict:
+    """Convierte datetime y otros tipos no serializables a string para JSONB."""
+    import json
+    return json.loads(json.dumps(obj, default=str))
+
+
 async def create(
     session: AsyncSession,
     listing_id: int,
@@ -26,6 +32,7 @@ async def create(
     Persiste un snapshot, calculando todos los hashes.
     Devuelve el snapshot creado.
     """
+    payload = _jsonable(payload)
     content_hash = compute_content_hash(payload)
     price_hash = compute_price_hash(payload)
     availability_hash = compute_availability_hash(payload)
