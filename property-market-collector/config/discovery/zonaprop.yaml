@@ -1,0 +1,56 @@
+max_results_per_segment: 1000
+min_surface_m2: 0
+max_surface_m2: 10000
+min_price: 0
+max_price: 50000000
+
+surface_split_enabled: true
+price_split_enabled: true
+
+surface_split_priority: 1
+price_split_priority: 2
+
+max_depth: 20
+min_surface_range_m2: 5
+min_price_range: 1000
+
+minor_delta_ratio: 0.02
+major_delta_ratio: 0.10
+
+# Páginas a escanear en monitoreo parcial (delta menor)
+partial_scan_pages: 3
+
+segment_discovery_schedule: "weekly"
+
+operations:
+  compra: 1
+  alquiler: 2
+  temporal: 4
+
+locations:
+  buenos_aires_fuera_gba: 1
+  gba_norte: 990
+  gba_sur: 1000
+  gba_oeste: 1010
+  la_pampa: 2
+  capital_federal: 6
+  cordoba: 7
+  catamarca: 8
+  chaco: 9
+  chubut: 10
+  corrientes: 11
+  entre_rios: 12
+  formosa: 13
+  jujuy: 14
+  la_rioja: 16
+  mendoza: 17
+  misiones: 18
+  neuquen: 19
+  rio_negro: 20
+  salta: 21
+  san_juan: 22
+  san_luis: 23
+  santa_cruz: 24
+  santa_fe: 25
+  santiago_del_estero: 26
+  tierra_del_fuego: 27

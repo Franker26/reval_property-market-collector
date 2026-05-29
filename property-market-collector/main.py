@@ -70,11 +70,12 @@ app = FastAPI(title="Reval Market Intelligence", lifespan=lifespan)
 
 if _db_available and WRITE_DATABASE:
     try:
-        from app.routers import listings, runs, errors, sources as sources_router
+        from app.routers import listings, runs, errors, sources as sources_router, discovery
         app.include_router(listings.router)
         app.include_router(runs.router)
         app.include_router(errors.router)
         app.include_router(sources_router.router)
+        app.include_router(discovery.router)
     except Exception as exc:
         log.warning("No se pudieron registrar routers de DB: %s", exc)
 

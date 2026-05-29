@@ -1,6 +1,9 @@
 """
-Scheduler mínimo con APScheduler.
-Corre los jobs de discovery y revisit en ventanas horarias configuradas.
+Scheduler: orquesta el pipeline de 3 fases de discovery.
+
+  Semanal  → segment_discovery   (construye árbol adaptativo)
+  Diario   → url_discovery       (extrae URLs de segmentos hoja)
+  Diario   → incremental_monitor (detecta cambios en counts)
 """
 from __future__ import annotations
 
@@ -17,17 +20,49 @@ log = logging.getLogger(__name__)
 _scheduler: AsyncIOScheduler | None = None
 
 
-async def _job_weekly_zonaprop_discovery() -> None:
+# ── Jobs ──────────────────────────────────────────────────────────────────────
+
+
+async def _job_segment_discovery() -> None:
     if not is_within_operational_window():
-        log.info("scheduler: fuera de ventana horaria — omitiendo discovery")
+        log.info("scheduler: fuera de ventana — omitiendo segment_discovery")
         return
-    log.info("scheduler: iniciando weekly_zonaprop_api_discovery")
+    log.info("scheduler: iniciando segment_discovery")
     try:
-        from app.services.discovery_service import run_zonaprop_api_discovery
-        result = await run_zonaprop_api_discovery(max_pages=100)
-        log.info("scheduler: discovery finalizado — %s", result)
+        from app.services.discovery_service import run_segment_discovery
+        result = await run_segment_discovery()
+        log.info("scheduler: segment_discovery finalizado — %s", result)
     except Exception as exc:
-        log.error("scheduler: error en discovery — %s", exc)
+        log.error("scheduler: error en segment_discovery — %s", exc)
+
+
+async def _job_url_discovery() -> None:
+    if not is_within_operational_window():
+        log.info("scheduler: fuera de ventana — omitiendo url_discovery")
+        return
+    log.info("scheduler: iniciando url_discovery")
+    try:
+        from app.services.discovery_service import run_url_discovery
+        result = await run_url_discovery()
+        log.info("scheduler: url_discovery finalizado — %s", result)
+    except Exception as exc:
+        log.error("scheduler: error en url_discovery — %s", exc)
+
+
+async def _job_incremental_monitor() -> None:
+    if not is_within_operational_window():
+        log.info("scheduler: fuera de ventana — omitiendo incremental_monitor")
+        return
+    log.info("scheduler: iniciando incremental_monitor")
+    try:
+        from app.services.discovery_service import run_incremental_monitor
+        result = await run_incremental_monitor()
+        log.info("scheduler: incremental_monitor finalizado — %s", result)
+    except Exception as exc:
+        log.error("scheduler: error en incremental_monitor — %s", exc)
+
+
+# ── Configuración del scheduler ───────────────────────────────────────────────
 
 
 def get_scheduler() -> AsyncIOScheduler:
@@ -36,11 +71,31 @@ def get_scheduler() -> AsyncIOScheduler:
         settings = get_settings()
         _scheduler = AsyncIOScheduler(timezone=settings.collector_timezone)
 
-        # Discovery semanal: lunes a las 10:00 AM (hora Argentina)
+        # Semanal: lunes 02:00 AM (fuera de horario pico, antes del día laboral)
         _scheduler.add_job(
-            _job_weekly_zonaprop_discovery,
-            trigger=CronTrigger(day_of_week="mon", hour=10, minute=0),
-            id="weekly_zonaprop_api_discovery",
+            _job_segment_discovery,
+            trigger=CronTrigger(day_of_week="mon", hour=2, minute=0),
+            id="weekly_segment_discovery",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+
+        # Diario: 08:00 AM — extracción de URLs tras el segment_discovery semanal
+        _scheduler.add_job(
+            _job_url_discovery,
+            trigger=CronTrigger(hour=8, minute=0),
+            id="daily_url_discovery",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+
+        # Diario: 20:00 PM — monitoreo de cambios en fin de jornada
+        _scheduler.add_job(
+            _job_incremental_monitor,
+            trigger=CronTrigger(hour=20, minute=0),
+            id="daily_incremental_monitor",
             replace_existing=True,
             max_instances=1,
             coalesce=True,

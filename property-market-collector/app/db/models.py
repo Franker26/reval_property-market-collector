@@ -18,6 +18,55 @@ class Base(DeclarativeBase):
     pass
 
 
+class MarketSegment(Base):
+    __tablename__ = "market_segments"
+    __table_args__ = (
+        Index("idx_market_segments_portal_op_prov", "portal", "operation_key", "province_key"),
+        Index("idx_market_segments_leaf", "is_leaf", "portal"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    portal: Mapped[str] = mapped_column(Text, nullable=False)
+    operation_key: Mapped[str] = mapped_column(Text, nullable=False)
+    operation_value: Mapped[int] = mapped_column(Integer, nullable=False)
+    province_key: Mapped[str] = mapped_column(Text, nullable=False)
+    province_value: Mapped[int] = mapped_column(Integer, nullable=False)
+    price_min: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    price_max: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    surface_min: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    surface_max: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    total_count: Mapped[Optional[int]] = mapped_column(Integer)
+    depth: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    parent_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("market_segments.id"))
+    is_leaf: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_oversized: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="active")
+    last_checked_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    snapshots: Mapped[list["SegmentSnapshot"]] = relationship(back_populates="segment")
+
+
+class SegmentSnapshot(Base):
+    __tablename__ = "segment_snapshots"
+    __table_args__ = (
+        Index("idx_segment_snapshots_segment_captured", "segment_id", "captured_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    segment_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("market_segments.id"), nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    total_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    price_min: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    price_max: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    surface_min: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    surface_max: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+
+    segment: Mapped["MarketSegment"] = relationship(back_populates="snapshots")
+
+
 class MarketSource(Base):
     __tablename__ = "market_sources"
 
@@ -30,7 +79,6 @@ class MarketSource(Base):
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     listings: Mapped[list["ListingEntity"]] = relationship(back_populates="source")
-    targets: Mapped[list["ListingTarget"]] = relationship(back_populates="source")
     runs: Mapped[list["CollectionRun"]] = relationship(back_populates="source")
     discovery_events: Mapped[list["DiscoveryEvent"]] = relationship(back_populates="source")
 
@@ -45,6 +93,7 @@ class ListingEntity(Base):
     source_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("market_sources.id"), nullable=False)
     external_id: Mapped[str] = mapped_column(Text, nullable=False)
     canonical_url: Mapped[Optional[str]] = mapped_column(Text)
+    segment_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("market_segments.id"))
 
     operation_type: Mapped[Optional[str]] = mapped_column(Text)
     property_type: Mapped[Optional[str]] = mapped_column(Text)
@@ -166,33 +215,6 @@ class CollectionError(Base):
     run: Mapped[Optional["CollectionRun"]] = relationship(back_populates="errors")
     listing: Mapped[Optional["ListingEntity"]] = relationship(back_populates="errors")
 
-
-class ListingTarget(Base):
-    __tablename__ = "listing_targets"
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    source_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("market_sources.id"), nullable=False)
-    search_url: Mapped[str] = mapped_column(Text, nullable=False)
-    operation_type: Mapped[Optional[str]] = mapped_column(Text)
-    property_type: Mapped[Optional[str]] = mapped_column(Text)
-    location_text: Mapped[Optional[str]] = mapped_column(Text)
-
-    state: Mapped[str] = mapped_column(Text, nullable=False, default="active")
-    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=50)
-
-    last_processed_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
-    next_process_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
-    cooldown_until: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
-
-    last_page_processed: Mapped[Optional[int]] = mapped_column(Integer)
-    last_offset_processed: Mapped[Optional[int]] = mapped_column(Integer)
-    last_success_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
-    last_error_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
-
-    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
-
-    source: Mapped["MarketSource"] = relationship(back_populates="targets")
 
 
 class ListingChangeEvent(Base):
