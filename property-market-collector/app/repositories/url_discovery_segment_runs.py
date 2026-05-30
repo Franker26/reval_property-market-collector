@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,6 +45,19 @@ async def get_pending(session: AsyncSession, portal: str) -> list[UrlDiscoverySe
     return list(result.scalars().all())
 
 
+async def count_by_status(session: AsyncSession, portal: Optional[str] = None) -> dict[str, int]:
+    """Devuelve conteo de runs agrupados por status. Útil para health/dashboard."""
+    stmt = (
+        select(UrlDiscoverySegmentRun.status, func.count().label("n"))
+        .join(MarketSegment, UrlDiscoverySegmentRun.segment_id == MarketSegment.id)
+    )
+    if portal:
+        stmt = stmt.where(MarketSegment.portal == portal)
+    stmt = stmt.group_by(UrlDiscoverySegmentRun.status)
+    result = await session.execute(stmt)
+    return {row.status: row.n for row in result}
+
+
 async def mark_started(session: AsyncSession, run_id: int) -> None:
     now = datetime.now(timezone.utc)
     await session.execute(
@@ -61,6 +74,16 @@ async def mark_complete(
     listings_found: int = 0,
     new_count: int = 0,
     changed_count: int = 0,
+    requests_total: int = 0,
+    requests_success: int = 0,
+    requests_failed: int = 0,
+    requests_403: int = 0,
+    requests_429: int = 0,
+    requests_5xx: int = 0,
+    timeouts: int = 0,
+    avg_latency_ms: Optional[float] = None,
+    max_latency_ms: Optional[float] = None,
+    cooldown_triggered: bool = False,
 ) -> None:
     now = datetime.now(timezone.utc)
     await session.execute(
@@ -73,6 +96,16 @@ async def mark_complete(
             listings_found=listings_found,
             new_count=new_count,
             changed_count=changed_count,
+            requests_total=requests_total,
+            requests_success=requests_success,
+            requests_failed=requests_failed,
+            requests_403=requests_403,
+            requests_429=requests_429,
+            requests_5xx=requests_5xx,
+            timeouts=timeouts,
+            avg_latency_ms=avg_latency_ms,
+            max_latency_ms=max_latency_ms,
+            cooldown_triggered=cooldown_triggered,
             updated_at=now,
         )
     )

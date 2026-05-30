@@ -1,9 +1,10 @@
 """Repositorio para collection_errors."""
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import CollectionError
@@ -45,6 +46,26 @@ def classify_http_error(status_code: int) -> tuple[str, bool]:
         429: ("http_429", True),
     }
     return mapping.get(status_code, (f"http_{status_code}", status_code >= 500))
+
+
+async def count_by_type_since(session: AsyncSession, since: datetime) -> dict[str, int]:
+    """Conteo de errores por tipo desde una fecha dada. Útil para health/dashboard."""
+    result = await session.execute(
+        select(CollectionError.error_type, func.count().label("n"))
+        .where(CollectionError.failed_at >= since)
+        .group_by(CollectionError.error_type)
+    )
+    return {row.error_type: row.n for row in result}
+
+
+async def get_last(session: AsyncSession, source_id: Optional[int] = None) -> Optional[CollectionError]:
+    """Devuelve el error más reciente, opcionalmente filtrado por source."""
+    stmt = select(CollectionError)
+    if source_id is not None:
+        stmt = stmt.where(CollectionError.source_id == source_id)
+    stmt = stmt.order_by(CollectionError.id.desc()).limit(1)
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
 
 
 async def list_recent(

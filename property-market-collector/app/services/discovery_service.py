@@ -5,10 +5,12 @@ Cada función crea un collection_run para trazabilidad.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Optional
 
 from app.db.session import get_async_session_factory
+from app.repositories import collection_errors as errors_repo
 from app.repositories import collection_runs as runs_repo
 from app.repositories import listings as listings_repo
 from app.repositories import market_segments as seg_repo
@@ -16,6 +18,9 @@ from app.repositories import sources as sources_repo
 from app.repositories import url_discovery_segment_runs as run_repo
 
 log = logging.getLogger(__name__)
+
+_ALERT_ERROR_RATE_THRESHOLD = int(os.getenv("ALERT_ERROR_RATE_THRESHOLD", "10"))
+_ALERT_CONSECUTIVE_4XX_THRESHOLD = int(os.getenv("ALERT_CONSECUTIVE_4XX_THRESHOLD", "3"))
 
 
 # ── Fase 1: Segment Discovery (semanal) ───────────────────────────────────────
@@ -104,6 +109,12 @@ async def run_segment_discovery(
     except Exception as exc:
         log.error("discovery_service: segment_discovery falló — %s", exc)
         final_status = "failed"
+        from app.core.alerts import dispatch
+        await dispatch(
+            "run_failed", "critical",
+            f"segment_discovery falló: {exc}",
+            {"run_id": run_id, "portal": portal},
+        )
 
     stats = {"leaf_count": leaf_count, "oversized_count": oversized_count}
     async with factory() as session:
@@ -161,6 +172,7 @@ async def run_url_discovery_window(
     )
 
     stats: dict = {"processed": 0, "complete": 0, "stopped_early": 0, "failed": 0}
+    window_error_count = 0
 
     for run in pending:
         if datetime.now(timezone.utc) >= stop_at.astimezone(timezone.utc):
@@ -173,6 +185,7 @@ async def run_url_discovery_window(
 
         total_found = 0
         changed_count = 0
+        segment_id = run.segment_id
 
         async def persist(postings: list[dict], page_num: int) -> None:
             nonlocal total_found, changed_count
@@ -196,11 +209,44 @@ async def run_url_discovery_window(
                             changed_count += 1
                     total_found += len(postings)
 
+        async def make_error_fn(run_id: int, seg_id: int):
+            async def error_fn(
+                error_type: str,
+                http_status: Optional[int],
+                message: str,
+                retryable: bool,
+            ) -> None:
+                nonlocal window_error_count
+                window_error_count += 1
+                async with factory() as sess:
+                    async with sess.begin():
+                        await errors_repo.record(
+                            session=sess,
+                            error_type=error_type,
+                            run_id=run_id,
+                            source_id=source_id,
+                            http_status=http_status,
+                            error_message=message,
+                            retryable=retryable,
+                        )
+                if window_error_count >= _ALERT_ERROR_RATE_THRESHOLD:
+                    from app.core.alerts import dispatch
+                    await dispatch(
+                        "error_rate_exceeded", "warning",
+                        f"url_discovery: {window_error_count} errores en la ventana actual",
+                        {"portal": portal, "threshold": _ALERT_ERROR_RATE_THRESHOLD},
+                    )
+            return error_fn
+
+        error_fn = await make_error_fn(run.id, segment_id)
+
         try:
-            seg_stats = await _discover([run.segment], persist_fn=persist)
+            seg_stats = await _discover([run.segment], persist_fn=persist, error_fn=error_fn)
             per_seg = seg_stats.get("per_segment", [{}])
-            stopped_early = per_seg[0].get("stopped_early", False) if per_seg else False
-            pages_ok = per_seg[0].get("pages_ok", 0) if per_seg else 0
+            seg_info = per_seg[0] if per_seg else {}
+            stopped_early = seg_info.get("stopped_early", False)
+            pages_ok = seg_info.get("pages_ok", 0)
+            seg_metrics = seg_info.get("metrics", {})
 
             if stopped_early:
                 async with factory() as session:
@@ -221,6 +267,7 @@ async def run_url_discovery_window(
                             listings_found=total_found,
                             new_count=total_found - changed_count,
                             changed_count=changed_count,
+                            **seg_metrics,
                         )
                 stats["complete"] += 1
                 log.info(
@@ -275,6 +322,7 @@ async def run_url_discovery(
         )
 
     total_written = 0
+    run_error_count = 0
 
     async def persist(postings: list[dict], page_num: int) -> None:
         nonlocal total_written
@@ -297,13 +345,51 @@ async def run_url_discovery(
                         )
                 total_written += len(postings)
 
+    async def error_fn(
+        error_type: str,
+        http_status: Optional[int],
+        message: str,
+        retryable: bool,
+    ) -> None:
+        nonlocal run_error_count
+        run_error_count += 1
+        async with factory() as sess:
+            async with sess.begin():
+                await errors_repo.record(
+                    session=sess,
+                    error_type=error_type,
+                    run_id=run_id,
+                    source_id=source_id,
+                    http_status=http_status,
+                    error_message=message,
+                    retryable=retryable,
+                )
+        if run_error_count >= _ALERT_ERROR_RATE_THRESHOLD:
+            from app.core.alerts import dispatch
+            await dispatch(
+                "error_rate_exceeded", "warning",
+                f"url_discovery: {run_error_count} errores en run {run_id}",
+                {"portal": portal, "run_id": run_id, "threshold": _ALERT_ERROR_RATE_THRESHOLD},
+            )
+
     try:
-        agg = await _discover(segments, persist_fn=persist, max_pages_per_segment=max_pages_per_segment)
+        agg = await _discover(
+            segments,
+            persist_fn=persist,
+            error_fn=error_fn,
+            max_pages_per_segment=max_pages_per_segment,
+        )
         final_status = "success" if agg["total_found"] > 0 else "partial"
     except Exception as exc:
         log.error("discovery_service: url_discovery falló — %s", exc)
         agg = {"total_found": 0, "segments_processed": 0, "segments_failed": 0}
         final_status = "failed"
+        from app.core.alerts import dispatch
+        await dispatch(
+            "run_failed", "critical",
+            f"url_discovery falló: {exc}",
+            {"run_id": run_id, "portal": portal},
+        )
 
     stats = {**agg, "listings_written": total_written}
     async with factory() as session:
@@ -389,6 +475,12 @@ async def run_incremental_monitor(
         log.error("discovery_service: incremental_monitor falló — %s", exc)
         agg = {}
         final_status = "failed"
+        from app.core.alerts import dispatch
+        await dispatch(
+            "run_failed", "critical",
+            f"incremental_monitor falló: {exc}",
+            {"run_id": run_id, "portal": portal},
+        )
 
     stats = {**agg, "listings_written": total_written}
     async with factory() as session:

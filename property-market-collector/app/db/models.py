@@ -238,6 +238,18 @@ class UrlDiscoverySegmentRun(Base):
     new_count: Mapped[Optional[int]] = mapped_column(Integer, default=0)
     changed_count: Mapped[Optional[int]] = mapped_column(Integer, default=0)
 
+    # Métricas de requests HTTP por segmento
+    requests_total: Mapped[Optional[int]] = mapped_column(Integer, default=0)
+    requests_success: Mapped[Optional[int]] = mapped_column(Integer, default=0)
+    requests_failed: Mapped[Optional[int]] = mapped_column(Integer, default=0)
+    requests_403: Mapped[Optional[int]] = mapped_column(Integer, default=0)
+    requests_429: Mapped[Optional[int]] = mapped_column(Integer, default=0)
+    requests_5xx: Mapped[Optional[int]] = mapped_column(Integer, default=0)
+    timeouts: Mapped[Optional[int]] = mapped_column(Integer, default=0)
+    avg_latency_ms: Mapped[Optional[float]] = mapped_column(Numeric)
+    max_latency_ms: Mapped[Optional[float]] = mapped_column(Numeric)
+    cooldown_triggered: Mapped[Optional[bool]] = mapped_column(Boolean, default=False)
+
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_error: Mapped[Optional[str]] = mapped_column(Text)
 

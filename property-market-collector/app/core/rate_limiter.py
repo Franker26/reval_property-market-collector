@@ -89,6 +89,23 @@ class RateLimiter:
             self.source_key,
             self.config.cooldown_minutes,
         )
+        # Notificar al sistema de alertas de forma fire-and-forget
+        try:
+            import asyncio
+            from app.core.alerts import get_dispatcher, AlertEvent
+            from datetime import datetime, timezone
+            event = AlertEvent(
+                event_type="cooldown_activated",
+                severity="warning",
+                message=f"Rate limiter '{self.source_key}' entró en cooldown por {self.config.cooldown_minutes} minutos",
+                metadata={"source_key": self.source_key, "cooldown_minutes": self.config.cooldown_minutes},
+                occurred_at=datetime.now(timezone.utc),
+            )
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.create_task(get_dispatcher().dispatch(event))
+        except Exception:
+            pass
 
     def record_error(self, http_status: Optional[int] = None) -> None:
         self._state.errors_in_window += 1
@@ -157,3 +174,16 @@ def get_rate_limiter(source_key: str, config: Optional[RateLimiterConfig] = None
             config = _zonaprop_api_config()
         _limiters[source_key] = RateLimiter(source_key, config)
     return _limiters[source_key]
+
+
+def get_all_limiter_states() -> dict[str, dict]:
+    """Devuelve el estado actual de todos los rate limiters registrados."""
+    return {
+        key: {
+            "in_cooldown": lim.is_in_cooldown(),
+            "cooldown_remaining_s": round(lim.cooldown_remaining_seconds()),
+            "errors_in_window": lim._state.errors_in_window,
+            "requests_this_minute": lim._state.requests_this_minute,
+        }
+        for key, lim in _limiters.items()
+    }

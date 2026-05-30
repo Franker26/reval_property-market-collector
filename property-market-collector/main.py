@@ -59,7 +59,18 @@ async def lifespan(app: FastAPI):
                 await seed_sources(session)
 
             start_scheduler()
-            log.info("DB y scheduler iniciados correctamente")
+
+            from app.core.alerts import setup_alert_dispatcher, dispatch
+            setup_alert_dispatcher()
+
+            import asyncio
+            asyncio.create_task(dispatch(
+                "service_started", "warning",
+                "Reval Market Intelligence levantó correctamente",
+                {"env": os.getenv("APP_ENV", "development"), "db": "ok", "scheduler": "ok"},
+            ))
+
+            log.info("DB, scheduler y alertas iniciados correctamente")
         except Exception as exc:
             log.warning("No se pudo inicializar DB/scheduler: %s", exc)
 
@@ -87,11 +98,14 @@ app.include_router(logs_router.router)
 if _db_available and WRITE_DATABASE:
     try:
         from app.routers import listings, runs, errors, sources as sources_router, discovery
+        from app.routers import health as health_router, ops as ops_router
         app.include_router(listings.router)
         app.include_router(runs.router)
         app.include_router(errors.router)
         app.include_router(sources_router.router)
         app.include_router(discovery.router)
+        app.include_router(health_router.router)
+        app.include_router(ops_router.router)
     except Exception as exc:
         log.warning("No se pudieron registrar routers de DB: %s", exc)
 

@@ -54,6 +54,30 @@ async def get_by_id(session: AsyncSession, run_id: int) -> Optional[CollectionRu
     return await session.get(CollectionRun, run_id)
 
 
+async def get_active(session: AsyncSession) -> Optional[CollectionRun]:
+    """Devuelve el run actualmente en estado 'running', si existe."""
+    result = await session.execute(
+        select(CollectionRun)
+        .where(CollectionRun.status == "running")
+        .order_by(CollectionRun.id.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_last_completed(session: AsyncSession, run_type: Optional[str] = None) -> Optional[CollectionRun]:
+    """Devuelve el último run completado (success o failed), opcionalmente filtrado por tipo."""
+    stmt = (
+        select(CollectionRun)
+        .where(CollectionRun.status.in_(["success", "failed", "partial"]))
+    )
+    if run_type:
+        stmt = stmt.where(CollectionRun.run_type == run_type)
+    stmt = stmt.order_by(CollectionRun.id.desc()).limit(1)
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
+
+
 async def list_recent(
     session: AsyncSession,
     source_id: Optional[int] = None,
