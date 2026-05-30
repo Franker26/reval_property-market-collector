@@ -209,22 +209,22 @@ async def list_segments(
 ):
     """Lista los segmentos de mercado activos."""
     from sqlalchemy import select
-    from app.db.models import MarketSegment
+    from app.db.models import ZonapropSegment
     from app.db.session import get_async_session_factory
 
     factory = get_async_session_factory()
     async with factory() as session:
-        stmt = select(MarketSegment).where(
-            MarketSegment.portal == portal,
-            MarketSegment.status == "active",
+        stmt = select(ZonapropSegment).where(
+            ZonapropSegment.portal == portal,
+            ZonapropSegment.status == "active",
         )
         if only_leaves:
-            stmt = stmt.where(MarketSegment.is_leaf == True)  # noqa: E712
+            stmt = stmt.where(ZonapropSegment.is_leaf == True)  # noqa: E712
         if operation_key:
-            stmt = stmt.where(MarketSegment.operation_key == operation_key)
+            stmt = stmt.where(ZonapropSegment.operation_key == operation_key)
         if location_key:
-            stmt = stmt.where(MarketSegment.province_key == location_key)
-        stmt = stmt.order_by(MarketSegment.id).limit(limit).offset(offset)
+            stmt = stmt.where(ZonapropSegment.province_key == location_key)
+        stmt = stmt.order_by(ZonapropSegment.id).limit(limit).offset(offset)
         result = await session.execute(stmt)
         segments = list(result.scalars().all())
 

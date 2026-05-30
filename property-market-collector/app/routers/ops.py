@@ -11,7 +11,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import case, func, select
 
 from app.core.rate_limiter import get_all_limiter_states
-from app.db.models import CollectionError, CollectionRun, UrlDiscoverySegmentRun
+from app.db.models import CollectionError, CollectionRun, ZonapropSegmentScanQueue
 from app.db.session import get_async_session_factory
 from app.repositories import collection_errors as errors_repo
 from app.repositories import collection_runs as runs_repo
@@ -37,21 +37,21 @@ async def ops_summary():
         # Performance del último ciclo: métricas agregadas de segment_runs completados
         perf_result = await session.execute(
             select(
-                func.sum(UrlDiscoverySegmentRun.listings_found).label("urls_discovered"),
-                func.sum(UrlDiscoverySegmentRun.new_count).label("urls_new"),
-                func.sum(UrlDiscoverySegmentRun.changed_count).label("urls_changed"),
-                func.sum(UrlDiscoverySegmentRun.requests_total).label("requests_total"),
-                func.sum(UrlDiscoverySegmentRun.requests_success).label("requests_success"),
-                func.sum(UrlDiscoverySegmentRun.requests_failed).label("requests_failed"),
-                func.avg(UrlDiscoverySegmentRun.avg_latency_ms).label("avg_latency_ms"),
-                func.max(UrlDiscoverySegmentRun.max_latency_ms).label("max_latency_ms"),
+                func.sum(ZonapropSegmentScanQueue.listings_found).label("urls_discovered"),
+                func.sum(ZonapropSegmentScanQueue.new_count).label("urls_new"),
+                func.sum(ZonapropSegmentScanQueue.changed_count).label("urls_changed"),
+                func.sum(ZonapropSegmentScanQueue.requests_total).label("requests_total"),
+                func.sum(ZonapropSegmentScanQueue.requests_success).label("requests_success"),
+                func.sum(ZonapropSegmentScanQueue.requests_failed).label("requests_failed"),
+                func.avg(ZonapropSegmentScanQueue.avg_latency_ms).label("avg_latency_ms"),
+                func.max(ZonapropSegmentScanQueue.max_latency_ms).label("max_latency_ms"),
                 func.sum(
-                    case((UrlDiscoverySegmentRun.cooldown_triggered == True, 1), else_=0)  # noqa: E712
+                    case((ZonapropSegmentScanQueue.cooldown_triggered == True, 1), else_=0)  # noqa: E712
                 ).label("cooldown_count"),
             )
             .where(
-                UrlDiscoverySegmentRun.status == "complete",
-                UrlDiscoverySegmentRun.completed_at >= now - timedelta(days=1),
+                ZonapropSegmentScanQueue.status == "complete",
+                ZonapropSegmentScanQueue.completed_at >= now - timedelta(days=1),
             )
         )
         perf = perf_result.one()
@@ -66,11 +66,11 @@ async def ops_summary():
 
         # Segmentos problemáticos: fallidos o con muchos errores HTTP
         problematic_result = await session.execute(
-            select(UrlDiscoverySegmentRun)
+            select(ZonapropSegmentScanQueue)
             .where(
-                UrlDiscoverySegmentRun.status == "failed",
+                ZonapropSegmentScanQueue.status == "failed",
             )
-            .order_by(UrlDiscoverySegmentRun.updated_at.desc())
+            .order_by(ZonapropSegmentScanQueue.updated_at.desc())
             .limit(10)
         )
         problematic_segs = problematic_result.scalars().all()
@@ -78,21 +78,21 @@ async def ops_summary():
         # Cooldowns hoy
         cooldown_today = await session.execute(
             select(func.count())
-            .select_from(UrlDiscoverySegmentRun)
+            .select_from(ZonapropSegmentScanQueue)
             .where(
-                UrlDiscoverySegmentRun.cooldown_triggered == True,  # noqa: E712
-                UrlDiscoverySegmentRun.completed_at >= now.replace(hour=0, minute=0, second=0, microsecond=0),
+                ZonapropSegmentScanQueue.cooldown_triggered == True,  # noqa: E712
+                ZonapropSegmentScanQueue.completed_at >= now.replace(hour=0, minute=0, second=0, microsecond=0),
             )
         )
         cooldowns_today = cooldown_today.scalar_one() or 0
 
         # Trends: últimos 7 días de urls_discovered y errores por día
-        _seg_day = func.date_trunc("day", UrlDiscoverySegmentRun.completed_at)
+        _seg_day = func.date_trunc("day", ZonapropSegmentScanQueue.completed_at)
         trends_url_result = await session.execute(
-            select(_seg_day.label("day"), func.sum(UrlDiscoverySegmentRun.listings_found).label("total"))
+            select(_seg_day.label("day"), func.sum(ZonapropSegmentScanQueue.listings_found).label("total"))
             .where(
-                UrlDiscoverySegmentRun.status == "complete",
-                UrlDiscoverySegmentRun.completed_at >= now - timedelta(days=7),
+                ZonapropSegmentScanQueue.status == "complete",
+                ZonapropSegmentScanQueue.completed_at >= now - timedelta(days=7),
             )
             .group_by(_seg_day)
             .order_by(_seg_day)
@@ -115,11 +115,11 @@ async def ops_summary():
         ]
 
         trends_lat_result = await session.execute(
-            select(_seg_day.label("day"), func.avg(UrlDiscoverySegmentRun.avg_latency_ms).label("avg_ms"))
+            select(_seg_day.label("day"), func.avg(ZonapropSegmentScanQueue.avg_latency_ms).label("avg_ms"))
             .where(
-                UrlDiscoverySegmentRun.status == "complete",
-                UrlDiscoverySegmentRun.completed_at >= now - timedelta(days=7),
-                UrlDiscoverySegmentRun.avg_latency_ms.isnot(None),
+                ZonapropSegmentScanQueue.status == "complete",
+                ZonapropSegmentScanQueue.completed_at >= now - timedelta(days=7),
+                ZonapropSegmentScanQueue.avg_latency_ms.isnot(None),
             )
             .group_by(_seg_day)
             .order_by(_seg_day)

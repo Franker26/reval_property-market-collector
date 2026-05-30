@@ -9,11 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import case, func, select
 
 from app.core.rate_limiter import get_all_limiter_states
-from app.db.models import MarketSegment
+from app.db.models import ZonapropSegment
 from app.db.session import get_async_session_factory
 from app.repositories import collection_errors as errors_repo
 from app.repositories import collection_runs as runs_repo
-from app.repositories import url_discovery_segment_runs as seg_run_repo
+from app.repositories.zonaprop import scan_queue as seg_run_repo
 
 router = APIRouter(tags=["health"])
 
@@ -53,10 +53,10 @@ async def discovery_health():
         seg_disc_result = await session.execute(
             select(
                 func.count().label("total"),
-                func.sum(case((MarketSegment.is_leaf == True, 1), else_=0)).label("leaves"),  # noqa: E712
-                func.sum(case((MarketSegment.is_oversized == True, 1), else_=0)).label("oversized"),  # noqa: E712
+                func.sum(case((ZonapropSegment.is_leaf == True, 1), else_=0)).label("leaves"),  # noqa: E712
+                func.sum(case((ZonapropSegment.is_oversized == True, 1), else_=0)).label("oversized"),  # noqa: E712
             )
-            .where(MarketSegment.status == "active")
+            .where(ZonapropSegment.status == "active")
         )
         sd = seg_disc_result.one()
 

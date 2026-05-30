@@ -105,7 +105,7 @@ async def _run(args: argparse.Namespace) -> int:
         leaves = await run_segment_discovery(cfg, on_leaf_found=_on_leaf)
     else:
         from app.db.session import get_async_session_factory
-        from app.repositories import market_segments as seg_repo
+        from app.repositories.zonaprop import segments as seg_repo
 
         factory = get_async_session_factory()
 

@@ -78,7 +78,7 @@ async def _get_source_id(session, source_code: str) -> int:
 
 async def _run(args: argparse.Namespace) -> int:
     from app.db.session import get_async_session_factory
-    from app.repositories import market_segments as seg_repo
+    from app.repositories.zonaprop import segments as seg_repo
     from app.repositories import listings as listing_repo
     from app.repositories import snapshots as snap_repo
 
@@ -163,24 +163,6 @@ async def _run(args: argparse.Namespace) -> int:
             max_pages_per_segment=args.max_pages,
         )
 
-        # CASO D: marcar offline los que no aparecieron en scans completos
-        for seg_stats in agg.get("per_segment", []):
-            if not seg_stats["stopped_early"] and seg_stats["segment_id"] is not None:
-                async with factory() as session:
-                    async with session.begin():
-                        n = await listing_repo.mark_offline_in_segment(
-                            session=session,
-                            segment_id=seg_stats["segment_id"],
-                            run_started_at=run_started_at,
-                        )
-                        total_offline += n
-                        if n:
-                            log.info(
-                                "offline: %d listings marcados en segmento %d (%s/%s)",
-                                n, seg_stats["segment_id"],
-                                seg_stats["op_key"], seg_stats["loc_key"],
-                            )
-
     elapsed = time.monotonic() - start_time
     elapsed_str = f"{int(elapsed // 60)}m {int(elapsed % 60)}s"
 
@@ -192,7 +174,6 @@ async def _run(args: argparse.Namespace) -> int:
     log.info("  nuevas               : %d", total_new)
     log.info("  actualizadas         : %d", total_changed)
     log.info("  sin cambios          : %d", total_touched)
-    log.info("  marcadas offline     : %d", total_offline)
     log.info("  duración             : %s", elapsed_str)
     log.info("  dry_run              : %s", args.dry_run)
     log.info("=" * 70)

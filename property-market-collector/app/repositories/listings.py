@@ -56,7 +56,6 @@ async def upsert_batch(
             entity = ListingEntity(
                 source_id=source_id,
                 external_id=posting["external_id"],
-                segment_id=posting.get("segment_db_id"),
                 content_hash=new_hash,
                 first_seen_at=now,
                 last_seen_at=now,
@@ -83,48 +82,6 @@ async def upsert_batch(
     await session.flush()
     return results
 
-
-async def mark_offline_in_segment(
-    session: AsyncSession,
-    segment_id: int,
-    run_started_at: datetime,
-) -> int:
-    """
-    CASO D: después de un scan completo de un segmento, marca como 'offline'
-    los listings activos que no fueron vistos (last_seen_at < run_started_at).
-
-    Solo llamar cuando el scan fue completo (stopped_early=False).
-    Devuelve cuántos listings se marcaron.
-    """
-    from app.repositories import snapshots as snap_repo
-
-    stmt = select(ListingEntity).where(
-        ListingEntity.segment_id == segment_id,
-        ListingEntity.status == "active",
-        ListingEntity.last_seen_at < run_started_at,
-    )
-    result = await session.execute(stmt)
-    missing = list(result.scalars().all())
-
-    if not missing:
-        return 0
-
-    now = datetime.utcnow()
-    for entity in missing:
-        entity.status = "offline"
-        entity.last_seen_at = now
-        entity.last_changed_at = now
-        entity.content_hash = compute_listing_hash(
-            {**_entity_as_dict(entity), "status": "offline"}
-        )
-
-    await session.flush()
-
-    for entity in missing:
-        await snap_repo.create_from_entity(session, entity)
-
-    await session.flush()
-    return len(missing)
 
 
 def _entity_as_dict(entity: ListingEntity) -> dict:

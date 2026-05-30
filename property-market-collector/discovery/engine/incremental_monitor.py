@@ -14,7 +14,7 @@ from typing import Awaitable, Callable, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.rate_limiter import CooldownError, get_rate_limiter
-from app.repositories import market_segments as seg_repo
+from app.repositories.zonaprop import segments as seg_repo
 from discovery.engine.models import PortalAdapter
 from discovery.engine.url_discovery import discover_segment
 

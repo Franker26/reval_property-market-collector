@@ -1,4 +1,4 @@
-"""Repositorio para market_segments y segment_snapshots."""
+"""Repositorio para zonaprop_segments y zonaprop_segment_snapshots."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -9,7 +9,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import func
 
-from app.db.models import MarketSegment, SegmentSnapshot, UrlDiscoverySegmentRun
+from app.db.models import ZonapropSegment, ZonapropSegmentSnapshot, ZonapropSegmentScanQueue
 
 
 async def upsert_segment(
@@ -28,10 +28,10 @@ async def upsert_segment(
     parent_id: Optional[int],
     is_leaf: bool,
     is_oversized: bool,
-) -> MarketSegment:
+) -> ZonapropSegment:
     """Upsert idempotente por boundaries. Reactiva segmentos existentes; crea nuevos si no existen."""
     stmt = (
-        insert(MarketSegment)
+        insert(ZonapropSegment)
         .values(
             portal=portal,
             operation_key=operation_key,
@@ -52,7 +52,7 @@ async def upsert_segment(
         )
     )
     stmt = stmt.on_conflict_do_update(
-        constraint="uq_market_segments_boundaries",
+        constraint="uq_zonaprop_segments_boundaries",
         set_={
             "status": "active",
             "total_count": stmt.excluded.total_count,
@@ -63,26 +63,26 @@ async def upsert_segment(
             "last_checked_at": func.now(),
             "updated_at": func.now(),
         },
-    ).returning(MarketSegment.id)
+    ).returning(ZonapropSegment.id)
 
     result = await session.execute(stmt)
     segment_id = result.scalar_one()
-    segment = await session.get(MarketSegment, segment_id)
+    segment = await session.get(ZonapropSegment, segment_id)
     return segment  # type: ignore[return-value]
 
 
-async def sync_pending_segment_runs(session: AsyncSession, portal: str) -> int:
-    """Inserta runs pendientes para leaf segments activos que aún no tienen run. Idempotente."""
+async def sync_pending_scan_queue(session: AsyncSession, portal: str) -> int:
+    """Inserta entradas pendientes en la cola de scan para leaf segments activos. Idempotente."""
     subq = (
-        select(MarketSegment.id)
+        select(ZonapropSegment.id)
         .where(
-            MarketSegment.portal == portal,
-            MarketSegment.is_leaf == True,  # noqa: E712
-            MarketSegment.status == "active",
+            ZonapropSegment.portal == portal,
+            ZonapropSegment.is_leaf == True,  # noqa: E712
+            ZonapropSegment.status == "active",
         )
     )
     stmt = (
-        insert(UrlDiscoverySegmentRun)
+        insert(ZonapropSegmentScanQueue)
         .from_select(["segment_id"], subq)
         .on_conflict_do_nothing(index_elements=["segment_id"])
     )
@@ -95,23 +95,23 @@ async def get_leaf_segments(
     portal: str,
     operation_key: Optional[str] = None,
     province_key: Optional[str] = None,
-) -> list[MarketSegment]:
-    stmt = select(MarketSegment).where(
-        MarketSegment.portal == portal,
-        MarketSegment.is_leaf == True,  # noqa: E712
-        MarketSegment.status == "active",
+) -> list[ZonapropSegment]:
+    stmt = select(ZonapropSegment).where(
+        ZonapropSegment.portal == portal,
+        ZonapropSegment.is_leaf == True,  # noqa: E712
+        ZonapropSegment.status == "active",
     )
     if operation_key:
-        stmt = stmt.where(MarketSegment.operation_key == operation_key)
+        stmt = stmt.where(ZonapropSegment.operation_key == operation_key)
     if province_key:
-        stmt = stmt.where(MarketSegment.province_key == province_key)
-    stmt = stmt.order_by(MarketSegment.id)
+        stmt = stmt.where(ZonapropSegment.province_key == province_key)
+    stmt = stmt.order_by(ZonapropSegment.id)
     result = await session.execute(stmt)
     return list(result.scalars().all())
 
 
-async def get_by_id(session: AsyncSession, segment_id: int) -> Optional[MarketSegment]:
-    return await session.get(MarketSegment, segment_id)
+async def get_by_id(session: AsyncSession, segment_id: int) -> Optional[ZonapropSegment]:
+    return await session.get(ZonapropSegment, segment_id)
 
 
 async def save_snapshot(
@@ -122,8 +122,8 @@ async def save_snapshot(
     price_max: float,
     surface_min: float,
     surface_max: float,
-) -> SegmentSnapshot:
-    snapshot = SegmentSnapshot(
+) -> ZonapropSegmentSnapshot:
+    snapshot = ZonapropSegmentSnapshot(
         segment_id=segment_id,
         total_count=total_count,
         price_min=price_min,
@@ -142,8 +142,8 @@ async def update_total_count(
     total_count: int,
 ) -> None:
     await session.execute(
-        update(MarketSegment)
-        .where(MarketSegment.id == segment_id)
+        update(ZonapropSegment)
+        .where(ZonapropSegment.id == segment_id)
         .values(total_count=total_count, last_checked_at=datetime.now(timezone.utc))
     )
 
@@ -151,8 +151,8 @@ async def update_total_count(
 async def deactivate_portal_segments(session: AsyncSession, portal: str) -> int:
     """Marca como inactivos todos los segmentos de un portal (pre-rebuild)."""
     result = await session.execute(
-        update(MarketSegment)
-        .where(MarketSegment.portal == portal, MarketSegment.status == "active")
+        update(ZonapropSegment)
+        .where(ZonapropSegment.portal == portal, ZonapropSegment.status == "active")
         .values(status="inactive")
     )
     return result.rowcount  # type: ignore[return-value]

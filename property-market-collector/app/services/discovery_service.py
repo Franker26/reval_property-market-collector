@@ -13,9 +13,9 @@ from app.db.session import get_async_session_factory
 from app.repositories import collection_errors as errors_repo
 from app.repositories import collection_runs as runs_repo
 from app.repositories import listings as listings_repo
-from app.repositories import market_segments as seg_repo
 from app.repositories import sources as sources_repo
-from app.repositories import url_discovery_segment_runs as run_repo
+from app.repositories.zonaprop import segments as seg_repo
+from app.repositories.zonaprop import scan_queue as run_repo
 
 log = logging.getLogger(__name__)
 
@@ -157,7 +157,7 @@ async def run_segment_discovery(
 
     async with factory() as session:
         async with session.begin():
-            new_runs = await seg_repo.sync_pending_segment_runs(session, portal)
+            new_runs = await seg_repo.sync_pending_scan_queue(session, portal)
 
     from app.core.alerts import dispatch
     await dispatch(

@@ -1,4 +1,4 @@
-"""Repositorio para url_discovery_segment_runs — progress tracking por segmento."""
+"""Repositorio para zonaprop_segment_scan_queue — cola de escaneo por segmento."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -8,7 +8,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import MarketSegment, UrlDiscoverySegmentRun
+from app.db.models import ZonapropSegment, ZonapropSegmentScanQueue
 
 _STALE_AFTER_HOURS = 6
 _MAX_ATTEMPTS = 3
@@ -18,42 +18,42 @@ async def reset_stale_running(session: AsyncSession) -> int:
     """Devuelve a pending los runs que llevan más de 6h en estado running."""
     cutoff = datetime.now(timezone.utc) - timedelta(hours=_STALE_AFTER_HOURS)
     result = await session.execute(
-        update(UrlDiscoverySegmentRun)
+        update(ZonapropSegmentScanQueue)
         .where(
-            UrlDiscoverySegmentRun.status == "running",
-            UrlDiscoverySegmentRun.locked_at < cutoff,
+            ZonapropSegmentScanQueue.status == "running",
+            ZonapropSegmentScanQueue.locked_at < cutoff,
         )
         .values(status="pending", locked_at=None, updated_at=datetime.now(timezone.utc))
     )
     return result.rowcount  # type: ignore[return-value]
 
 
-async def get_pending(session: AsyncSession, portal: str) -> list[UrlDiscoverySegmentRun]:
-    """Retorna runs pendientes para segmentos activos del portal, con segment cargado."""
+async def get_pending(session: AsyncSession, portal: str) -> list[ZonapropSegmentScanQueue]:
+    """Retorna entradas pendientes para segmentos activos del portal, con segment cargado."""
     stmt = (
-        select(UrlDiscoverySegmentRun)
-        .options(selectinload(UrlDiscoverySegmentRun.segment))
-        .join(MarketSegment, UrlDiscoverySegmentRun.segment_id == MarketSegment.id)
+        select(ZonapropSegmentScanQueue)
+        .options(selectinload(ZonapropSegmentScanQueue.segment))
+        .join(ZonapropSegment, ZonapropSegmentScanQueue.segment_id == ZonapropSegment.id)
         .where(
-            UrlDiscoverySegmentRun.status == "pending",
-            MarketSegment.portal == portal,
-            MarketSegment.status == "active",
+            ZonapropSegmentScanQueue.status == "pending",
+            ZonapropSegment.portal == portal,
+            ZonapropSegment.status == "active",
         )
-        .order_by(UrlDiscoverySegmentRun.id)
+        .order_by(ZonapropSegmentScanQueue.id)
     )
     result = await session.execute(stmt)
     return list(result.scalars().all())
 
 
 async def count_by_status(session: AsyncSession, portal: Optional[str] = None) -> dict[str, int]:
-    """Devuelve conteo de runs agrupados por status. Útil para health/dashboard."""
+    """Devuelve conteo de entradas agrupadas por status. Útil para health/dashboard."""
     stmt = (
-        select(UrlDiscoverySegmentRun.status, func.count().label("n"))
-        .join(MarketSegment, UrlDiscoverySegmentRun.segment_id == MarketSegment.id)
+        select(ZonapropSegmentScanQueue.status, func.count().label("n"))
+        .join(ZonapropSegment, ZonapropSegmentScanQueue.segment_id == ZonapropSegment.id)
     )
     if portal:
-        stmt = stmt.where(MarketSegment.portal == portal)
-    stmt = stmt.group_by(UrlDiscoverySegmentRun.status)
+        stmt = stmt.where(ZonapropSegment.portal == portal)
+    stmt = stmt.group_by(ZonapropSegmentScanQueue.status)
     result = await session.execute(stmt)
     return {row.status: row.n for row in result}
 
@@ -61,8 +61,8 @@ async def count_by_status(session: AsyncSession, portal: Optional[str] = None) -
 async def mark_started(session: AsyncSession, run_id: int) -> None:
     now = datetime.now(timezone.utc)
     await session.execute(
-        update(UrlDiscoverySegmentRun)
-        .where(UrlDiscoverySegmentRun.id == run_id)
+        update(ZonapropSegmentScanQueue)
+        .where(ZonapropSegmentScanQueue.id == run_id)
         .values(status="running", locked_at=now, started_at=now, updated_at=now)
     )
 
@@ -87,8 +87,8 @@ async def mark_complete(
 ) -> None:
     now = datetime.now(timezone.utc)
     await session.execute(
-        update(UrlDiscoverySegmentRun)
-        .where(UrlDiscoverySegmentRun.id == run_id)
+        update(ZonapropSegmentScanQueue)
+        .where(ZonapropSegmentScanQueue.id == run_id)
         .values(
             status="complete",
             completed_at=now,
@@ -120,22 +120,22 @@ async def mark_pending(
     if last_error is not None:
         values["last_error"] = last_error
     await session.execute(
-        update(UrlDiscoverySegmentRun)
-        .where(UrlDiscoverySegmentRun.id == run_id)
+        update(ZonapropSegmentScanQueue)
+        .where(ZonapropSegmentScanQueue.id == run_id)
         .values(**values)
     )
 
 
 async def mark_failed(session: AsyncSession, run_id: int, error: str) -> None:
     result = await session.execute(
-        select(UrlDiscoverySegmentRun.attempt_count)
-        .where(UrlDiscoverySegmentRun.id == run_id)
+        select(ZonapropSegmentScanQueue.attempt_count)
+        .where(ZonapropSegmentScanQueue.id == run_id)
     )
     attempt_count = (result.scalar_one_or_none() or 0) + 1
     new_status = "failed" if attempt_count >= _MAX_ATTEMPTS else "pending"
     await session.execute(
-        update(UrlDiscoverySegmentRun)
-        .where(UrlDiscoverySegmentRun.id == run_id)
+        update(ZonapropSegmentScanQueue)
+        .where(ZonapropSegmentScanQueue.id == run_id)
         .values(
             status=new_status,
             attempt_count=attempt_count,
