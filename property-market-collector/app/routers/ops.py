@@ -475,16 +475,16 @@ function render(data) {
   `;
 
   // Status badge en header
-  const badge = document.getElementById('status-badge');
+  const statusBadge = document.getElementById('status-badge');
   const totalErrors1h = data.recent_errors?.total_last_1h || 0;
   const inCooldown = Object.values(protection.rate_limiter_states || {}).some(r => r.in_cooldown);
   const hasFailed = data.segment_progress?.failed > 0;
   if (inCooldown || totalErrors1h > 10) {
-    badge.textContent = 'ALERTA'; badge.className = 'err';
+    statusBadge.textContent = 'ALERTA'; statusBadge.className = 'err';
   } else if (hasFailed || totalErrors1h > 2) {
-    badge.textContent = 'ADVERTENCIA'; badge.className = 'warn';
+    statusBadge.textContent = 'ADVERTENCIA'; statusBadge.className = 'warn';
   } else {
-    badge.textContent = 'OPERATIVO'; badge.className = 'ok';
+    statusBadge.textContent = 'OPERATIVO'; statusBadge.className = 'ok';
   }
 }
 
