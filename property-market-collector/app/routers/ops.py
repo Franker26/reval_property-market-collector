@@ -337,127 +337,143 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
 </main>
 <div id="toast"></div>
 <script>
-// ── Formatters ────────────────────────────────────────────────────────────────
-const fmtNum = n => n == null ? '—' : Number(n).toLocaleString('es-AR');
-const fmtPct = n => n == null ? '—' : Number(n).toFixed(1) + '%';
-const fmtMs  = n => n == null ? '—' : Math.round(n) + ' ms';
-const fmtDur = s => {
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function fmtNum(n) { return n == null ? '—' : Number(n).toLocaleString('es-AR'); }
+function fmtPct(n) { return n == null ? '—' : Number(n).toFixed(1) + '%'; }
+function fmtMs(n)  { return n == null ? '—' : Math.round(n) + ' ms'; }
+function fmtDur(s) {
   if (s == null) return '—';
   if (s < 60)   return Math.round(s) + 's';
   if (s < 3600) return (s/60).toFixed(1) + 'min';
   return (s/3600).toFixed(1) + 'h';
-};
-const fmtAgo = ts => {
+}
+function fmtAgo(ts) {
   if (!ts) return '—';
-  const d = (Date.now() - new Date(ts)) / 1000;
+  var d = (Date.now() - new Date(ts)) / 1000;
   if (d < 60)    return 'hace ' + Math.round(d) + 's';
   if (d < 3600)  return 'hace ' + Math.round(d/60) + 'min';
   if (d < 86400) return 'hace ' + (d/3600).toFixed(1) + 'h';
   return 'hace ' + Math.round(d/86400) + 'd';
-};
-const fmtLocalDow = ts => ts
-  ? new Date(ts).toLocaleString('es-AR',{weekday:'short',hour:'2-digit',minute:'2-digit'})
-  : '—';
-const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function fmtLocalDow(ts) {
+  if (!ts) return '—';
+  return new Date(ts).toLocaleString('es-AR',{weekday:'short',hour:'2-digit',minute:'2-digit'});
+}
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+// safe deep-get: safe(obj, 'a', 'b') === obj.a.b (returns undefined if any key is missing)
+function safe(obj) {
+  var cur = obj;
+  for (var i = 1; i < arguments.length; i++) {
+    if (cur == null) return undefined;
+    cur = cur[arguments[i]];
+  }
+  return cur;
+}
 
 // ── Toast ─────────────────────────────────────────────────────────────────────
-function toast(msg, type='info') {
-  const el = document.getElementById('toast');
-  el.textContent = msg; el.className = type + ' show';
-  setTimeout(() => { el.className = ''; }, 4000);
+function toast(msg, type) {
+  var el = document.getElementById('toast');
+  el.textContent = msg; el.className = (type || 'info') + ' show';
+  setTimeout(function() { el.className = ''; }, 4000);
 }
 
 // ── API ───────────────────────────────────────────────────────────────────────
-async function api(method, url, body) {
-  const r = await fetch(url, {
-    method,
+function api(method, url, body) {
+  return fetch(url, {
+    method: method,
     headers: {'Content-Type':'application/json'},
     body: body ? JSON.stringify(body) : undefined,
+  }).then(function(r) {
+    return r.json().then(function(d) {
+      if (!r.ok) throw new Error(d.detail || JSON.stringify(d));
+      return d;
+    });
   });
-  const d = await r.json();
-  if (!r.ok) throw new Error(d.detail || JSON.stringify(d));
-  return d;
 }
 
 // ── State ─────────────────────────────────────────────────────────────────────
-let _data = {};
-let _loading = {};
-let _logStates = {};   // { cardId: { open, content } }
+var _data = {};
+var _loading = {};
+var _logStates = {};
 
 function saveLogState(cardId) {
-  const box = document.querySelector(`#card-${cardId} .log-box`);
+  var box = document.querySelector('#card-' + cardId + ' .log-box');
   _logStates[cardId] = {
-    open: box?.classList.contains('open') || false,
-    content: box?.innerHTML || '',
+    open: !!(box && box.classList.contains('open')),
+    content: box ? box.innerHTML : '',
   };
 }
 function restoreLogState(cardId) {
-  const s = _logStates[cardId];
-  if (!s?.open) return;
-  const box = document.querySelector(`#card-${cardId} .log-box`);
-  const btn = document.querySelector(`#card-${cardId} .log-toggle`);
-  if (box)  { box.classList.add('open'); if (s.content) box.innerHTML = s.content; }
-  if (btn)  btn.textContent = '▼ Ocultar logs';
+  var s = _logStates[cardId];
+  if (!s || !s.open) return;
+  var box = document.querySelector('#card-' + cardId + ' .log-box');
+  var btn = document.querySelector('#card-' + cardId + ' .log-toggle');
+  if (box) { box.classList.add('open'); if (s.content) box.innerHTML = s.content; }
+  if (btn) btn.textContent = '▼ Ocultar logs';
 }
 
 // ── Actions ───────────────────────────────────────────────────────────────────
-async function triggerRun(svcKey, endpoint) {
+function triggerRun(svcKey, endpoint) {
   if (_loading[svcKey]) return;
   _loading[svcKey] = true; renderAll();
-  try {
-    await api('POST', endpoint, {});
+  api('POST', endpoint, {}).then(function() {
     toast(svcKey + ' iniciado', 'success');
     setTimeout(refresh, 1500);
-  } catch(e) { toast('Error: ' + e.message, 'error'); }
-  finally { _loading[svcKey] = false; renderAll(); }
+  }).catch(function(e) {
+    toast('Error: ' + e.message, 'error');
+  }).finally(function() {
+    _loading[svcKey] = false; renderAll();
+  });
 }
 
-async function cancelRun(svcKey) {
-  if (!confirm('¿Cancelar ' + svcKey + '?\\nEl run se detendrá en el próximo punto seguro.')) return;
-  try {
-    await api('POST', '/ops/cancel/' + svcKey, {});
-    toast('Cancelación solicitada', 'info');
+function cancelRun(svcKey) {
+  if (!confirm('Cancelar ' + svcKey + '? El run se detendra en el proximo punto seguro.')) return;
+  api('POST', '/ops/cancel/' + svcKey, {}).then(function() {
+    toast('Cancelacion solicitada', 'info');
     setTimeout(refresh, 2000);
-  } catch(e) { toast('Error: ' + e.message, 'error'); }
+  }).catch(function(e) { toast('Error: ' + e.message, 'error'); });
 }
 
-async function toggleSchedule(jobId, isPaused) {
-  if (!isPaused && !confirm('¿Pausar el schedule de ' + jobId + '?')) return;
-  const action = isPaused ? 'resume-job' : 'pause-job';
-  try {
-    await api('POST', '/discovery/scheduler/' + action + '/' + jobId, {});
+function toggleSchedule(jobId, isPaused) {
+  if (!isPaused && !confirm('Pausar el schedule de ' + jobId + '?')) return;
+  var action = isPaused ? 'resume-job' : 'pause-job';
+  api('POST', '/discovery/scheduler/' + action + '/' + jobId, {}).then(function() {
     toast(isPaused ? 'Schedule activado' : 'Schedule pausado', 'info');
     setTimeout(refresh, 600);
-  } catch(e) { toast('Error: ' + e.message, 'error'); }
+  }).catch(function(e) { toast('Error: ' + e.message, 'error'); });
 }
 
 // ── Logs ──────────────────────────────────────────────────────────────────────
 function toggleLogs(cardId, keyword) {
-  const box = document.querySelector('#card-' + cardId + ' .log-box');
-  const btn = document.querySelector('#card-' + cardId + ' .log-toggle');
+  var box = document.querySelector('#card-' + cardId + ' .log-box');
+  var btn = document.querySelector('#card-' + cardId + ' .log-toggle');
   if (!box) return;
   if (box.classList.contains('open')) {
-    box.classList.remove('open'); btn.textContent = '▶ Ver logs';
+    box.classList.remove('open');
+    if (btn) btn.textContent = '► Ver logs';
     _logStates[cardId] = { open: false, content: '' };
   } else {
-    box.classList.add('open'); btn.textContent = '▼ Ocultar logs';
+    box.classList.add('open');
+    if (btn) btn.textContent = '▼ Ocultar logs';
     loadLogs(cardId, keyword);
   }
 }
 
-async function loadLogs(cardId, keyword) {
-  const box = document.querySelector('#card-' + cardId + ' .log-box');
+function loadLogs(cardId, keyword) {
+  var box = document.querySelector('#card-' + cardId + ' .log-box');
   if (!box) return;
   box.innerHTML = '<div class="log-empty">Cargando...</div>';
-  try {
-    const d = await fetch('/logs?limit=200&logger=app').then(r => r.json());
-    const entries = (d.entries || []).filter(e =>
-      !keyword || (e.message || '').toLowerCase().includes(keyword.toLowerCase())
-    ).slice(-80);
+  fetch('/logs?limit=200&logger=app').then(function(r) { return r.json(); }).then(function(d) {
+    var kw = (keyword || '').toLowerCase();
+    var entries = (d.entries || []).filter(function(e) {
+      return !kw || (e.message || '').toLowerCase().indexOf(kw) >= 0;
+    }).slice(-80);
     if (!entries.length) { box.innerHTML = '<div class="log-empty">Sin logs para este servicio</div>'; return; }
-    box.innerHTML = entries.map(e => {
-      const t = e.time ? new Date(e.time).toLocaleTimeString('es-AR') : '';
-      const lv = e.level || 'INFO';
+    box.innerHTML = entries.map(function(e) {
+      var t = e.time ? new Date(e.time).toLocaleTimeString('es-AR') : '';
+      var lv = e.level || 'INFO';
       return '<div class="log-entry">'
         + '<span class="log-time">' + t + '</span>'
         + '<span class="log-lvl ' + lv + '">' + lv + '</span>'
@@ -466,7 +482,7 @@ async function loadLogs(cardId, keyword) {
     }).join('');
     box.scrollTop = box.scrollHeight;
     _logStates[cardId] = { open: true, content: box.innerHTML };
-  } catch(e) { box.innerHTML = '<div class="log-empty">Error cargando logs</div>'; }
+  }).catch(function() { box.innerHTML = '<div class="log-empty">Error cargando logs</div>'; });
 }
 
 // ── Component builders ────────────────────────────────────────────────────────
@@ -476,10 +492,11 @@ function chip(label, value, cls) {
 }
 
 function schedBtn(jobId, jobs) {
-  const j = (jobs || []).find(x => x.id === jobId);
+  var j = null;
+  for (var i = 0; i < (jobs || []).length; i++) { if (jobs[i].id === jobId) { j = jobs[i]; break; } }
   if (!j) return '';
-  const paused = j.paused;
-  const nextStr = paused ? 'Pausado' : fmtLocalDow(j.next_run);
+  var paused = j.paused;
+  var nextStr = paused ? 'Pausado' : fmtLocalDow(j.next_run);
   return '<button class="sched-btn" onclick="toggleSchedule(\'' + jobId + '\',' + paused + ')">'
     + '<span class="sched-dot ' + (paused ? 'off' : 'on') + '"></span>'
     + '<span>' + (paused ? 'PAUSADO' : 'ACTIVO') + '</span>'
@@ -501,7 +518,7 @@ function buildCard(id, title, isRunning, durationS, progressHtml, chipsHtml, act
     + '<div class="actions-row">' + actionsHtml + '</div>'
     + '<div class="log-section">'
     + '<div class="log-header">'
-    + '<button class="log-toggle" onclick="toggleLogs(\'' + id + '\',\'' + logKeyword + '\')">▶ Ver logs</button>'
+    + '<button class="log-toggle" onclick="toggleLogs(\'' + id + '\',\'' + logKeyword + '\')">► Ver logs</button>'
     + '<button class="log-refresh" onclick="loadLogs(\'' + id + '\',\'' + logKeyword + '\')" title="Refrescar">↺</button>'
     + '</div>'
     + '<div class="log-box"></div>'
@@ -510,51 +527,54 @@ function buildCard(id, title, isRunning, durationS, progressHtml, chipsHtml, act
 
 // ── Main render ───────────────────────────────────────────────────────────────
 function renderAll() {
-  const h = _data.health || {};
-  const s = _data.summary || {};
-  const perf = s.performance?.last_24h || {};
-  const sp   = h.segment_progress || {};
-  const sd   = h.segment_discovery || {};
-  const jobs = h.scheduler || [];
-  const ar   = h.active_run;
-  const lbt  = h.last_completed_by_type || {};
+  var h   = _data.health || {};
+  var s   = _data.summary || {};
+  var perf = (s.performance || {}).last_24h || {};
+  var sp  = h.segment_progress || {};
+  var sd  = h.segment_discovery || {};
+  var jobs = h.scheduler || [];
+  var ar  = h.active_run || null;
+  var lbt = h.last_completed_by_type || {};
+  var arType = ar ? ar.run_type : null;
+  var arDur  = ar ? ar.duration_so_far_s : null;
 
   // ── Segment Discovery ────────────────────────────────────────────────────
-  {
-    const id = 'segment-discovery';
-    const running = ar?.run_type === 'segment_discovery';
+  (function() {
+    var id = 'segment-discovery';
+    var running = arType === 'segment_discovery';
     saveLogState(id);
-    const chips = [
+    var lsd = lbt.segment_discovery || null;
+    var lsdStatus = lsd ? (lsd.status || '') : '';
+    var chips = [
       chip('Hojas', fmtNum(sd.leaves), 'good'),
       chip('Oversized', fmtNum(sd.oversized), sd.oversized > 0 ? 'warn' : ''),
       chip('Total segs.', fmtNum(sd.segments_total)),
-      chip('Último', lbt.segment_discovery ? fmtAgo(lbt.segment_discovery.finished_at) : '—'),
-      chip('Estado ant.', lbt.segment_discovery?.status || '—',
-        lbt.segment_discovery?.status === 'success' ? 'good'
-        : lbt.segment_discovery?.status === 'failed' ? 'bad' : 'sm'),
+      chip('Ultimo', lsd ? fmtAgo(lsd.finished_at) : '—'),
+      chip('Estado ant.', lsdStatus || '—',
+        lsdStatus === 'success' ? 'good' : lsdStatus === 'failed' ? 'bad' : 'sm'),
     ].join('');
-    const ld = _loading['segment_discovery'];
-    const acts = [
+    var ld = _loading['segment_discovery'];
+    var acts = [
       '<button class="btn btn-run" onclick="triggerRun(\'segment_discovery\',\'/discovery/segment-discovery\')"'
-        + (ld ? ' disabled' : '') + '>' + (ld ? '⟳ Iniciando...' : '▶ Ejecutar') + '</button>',
+        + (ld ? ' disabled' : '') + '>' + (ld ? 'Iniciando...' : '► Ejecutar') + '</button>',
       '<button class="btn btn-stop" onclick="cancelRun(\'segment_discovery\')"'
-        + (!running ? ' disabled' : '') + '>⬛ Cancelar</button>',
+        + (!running ? ' disabled' : '') + '>■ Cancelar</button>',
       schedBtn('weekly_segment_discovery', jobs),
     ].join('');
-    const el = document.getElementById('card-' + id);
+    var el = document.getElementById('card-' + id);
     el.className = 'svc-card' + (running ? ' running' : '');
-    el.innerHTML = buildCard(id, 'Segment Discovery', running, ar?.duration_so_far_s, '', chips, acts, 'segment_discovery');
+    el.innerHTML = buildCard(id, 'Segment Discovery', running, arDur, '', chips, acts, 'segment_discovery');
     restoreLogState(id);
-  }
+  })();
 
   // ── URL Discovery ────────────────────────────────────────────────────────
-  {
-    const id = 'url-discovery';
-    const running = ar?.run_type === 'url_discovery' || ar?.run_type === 'url_discovery_window';
+  (function() {
+    var id = 'url-discovery';
+    var running = arType === 'url_discovery' || arType === 'url_discovery_window';
     saveLogState(id);
-    const total = sp.total || 0, complete = sp.complete || 0;
-    const pct = total > 0 ? Math.round(complete / total * 100) : 0;
-    const progHtml = total > 0
+    var total = sp.total || 0, complete = sp.complete || 0;
+    var pct = total > 0 ? Math.round(complete / total * 100) : 0;
+    var progHtml = total > 0
       ? '<div class="prog-wrap">'
         + '<div class="prog-bar"><div class="prog-fill" style="width:' + pct + '%"></div></div>'
         + '<div class="prog-label">'
@@ -562,104 +582,114 @@ function renderAll() {
         + (sp.failed > 0 ? '<span style="color:#f85149">' + sp.failed + ' fallidos</span>' : '<span></span>')
         + '</div></div>'
       : '';
-    const chips = [
+    var lud = lbt.url_discovery || null;
+    var chips = [
       chip('URLs desc.', fmtNum(perf.urls_discovered)),
       chip('Nuevas', fmtNum(perf.urls_new), 'good'),
       chip('Modificadas', fmtNum(perf.urls_changed), perf.urls_changed > 0 ? 'warn' : ''),
-      chip('Éxito req.', fmtPct(perf.success_rate_pct), (perf.success_rate_pct||100) >= 90 ? 'good' : 'bad'),
+      chip('Exito req.', fmtPct(perf.success_rate_pct), (perf.success_rate_pct||100) >= 90 ? 'good' : 'bad'),
       chip('Latencia', fmtMs(perf.avg_latency_ms)),
-      chip('Último', lbt.url_discovery ? fmtAgo(lbt.url_discovery.finished_at) : '—'),
+      chip('Ultimo', lud ? fmtAgo(lud.finished_at) : '—'),
     ].join('');
-    const ld = _loading['url_discovery'];
-    const acts = [
+    var ld = _loading['url_discovery'];
+    var acts = [
       '<button class="btn btn-run" onclick="triggerRun(\'url_discovery\',\'/discovery/url-discovery\')"'
-        + (ld ? ' disabled' : '') + '>' + (ld ? '⟳ Iniciando...' : '▶ Ejecutar') + '</button>',
+        + (ld ? ' disabled' : '') + '>' + (ld ? 'Iniciando...' : '► Ejecutar') + '</button>',
       '<button class="btn btn-stop" onclick="cancelRun(\'url_discovery\')"'
-        + (!running ? ' disabled' : '') + '>⬛ Cancelar</button>',
+        + (!running ? ' disabled' : '') + '>■ Cancelar</button>',
       schedBtn('weekday_url_discovery', jobs),
     ].join('');
-    const el = document.getElementById('card-' + id);
+    var el = document.getElementById('card-' + id);
     el.className = 'svc-card' + (running ? ' running' : '');
-    el.innerHTML = buildCard(id, 'URL Discovery', running, ar?.duration_so_far_s, progHtml, chips, acts, 'url_discovery');
+    el.innerHTML = buildCard(id, 'URL Discovery', running, arDur, progHtml, chips, acts, 'url_discovery');
     restoreLogState(id);
-  }
+  })();
 
   // ── Incremental Monitor ──────────────────────────────────────────────────
-  {
-    const id = 'incremental-monitor';
-    const running = ar?.run_type === 'incremental_monitor';
+  (function() {
+    var id = 'incremental-monitor';
+    var running = arType === 'incremental_monitor';
     saveLogState(id);
-    const last = lbt.incremental_monitor;
-    const chips = [
-      chip('Último', last ? fmtAgo(last.finished_at) : '—'),
-      chip('Estado ant.', last?.status || '—', last?.status === 'success' ? 'good' : last?.status === 'failed' ? 'bad' : 'sm'),
-      chip('Duración ant.', last ? fmtDur(last.duration_seconds) : '—'),
-      chip('Found', last?.stats?.listings_found != null ? fmtNum(last.stats.listings_found) : '—'),
+    var last = lbt.incremental_monitor || null;
+    var lastStatus = last ? (last.status || '') : '';
+    var lastStats = last ? (last.stats || {}) : {};
+    var chips = [
+      chip('Ultimo', last ? fmtAgo(last.finished_at) : '—'),
+      chip('Estado ant.', lastStatus || '—',
+        lastStatus === 'success' ? 'good' : lastStatus === 'failed' ? 'bad' : 'sm'),
+      chip('Duracion ant.', last ? fmtDur(last.duration_seconds) : '—'),
+      chip('Found', lastStats.listings_found != null ? fmtNum(lastStats.listings_found) : '—'),
     ].join('');
-    const ld = _loading['incremental_monitor'];
-    const acts = [
+    var ld = _loading['incremental_monitor'];
+    var acts = [
       '<button class="btn btn-run" onclick="triggerRun(\'incremental_monitor\',\'/discovery/incremental-monitor\')"'
-        + (ld ? ' disabled' : '') + '>' + (ld ? '⟳ Iniciando...' : '▶ Ejecutar') + '</button>',
+        + (ld ? ' disabled' : '') + '>' + (ld ? 'Iniciando...' : '► Ejecutar') + '</button>',
       '<button class="btn btn-stop" onclick="cancelRun(\'incremental_monitor\')"'
-        + (!running ? ' disabled' : '') + '>⬛ Cancelar</button>',
+        + (!running ? ' disabled' : '') + '>■ Cancelar</button>',
     ].join('');
-    const el = document.getElementById('card-' + id);
+    var el = document.getElementById('card-' + id);
     el.className = 'svc-card' + (running ? ' running' : '');
-    el.innerHTML = buildCard(id, 'Incremental Monitor', running, ar?.duration_so_far_s, '', chips, acts, 'incremental_monitor');
+    el.innerHTML = buildCard(id, 'Incremental Monitor', running, arDur, '', chips, acts, 'incremental_monitor');
     restoreLogState(id);
-  }
+  })();
 
   // ── Global section ───────────────────────────────────────────────────────
-  {
-    const errByType = s.errors?.last_24h_by_type || {};
-    const errEntries = Object.entries(errByType).sort((a,b) => b[1]-a[1]);
+  (function() {
+    var errByType = (s.errors ? s.errors.last_24h_by_type : null) || {};
+    var errEntries = Object.keys(errByType).map(function(k) { return [k, errByType[k]]; });
+    errEntries.sort(function(a,b) { return b[1]-a[1]; });
     document.getElementById('glob-errors').innerHTML =
       '<div class="spark-label">Errores 24h por tipo</div>'
       + (errEntries.length
-        ? errEntries.map(([k,v]) =>
-            '<div class="rl-row"><span>' + k + '</span><span style="color:#f85149;font-weight:700">' + v + '</span></div>'
-          ).join('')
+        ? errEntries.map(function(kv) {
+            return '<div class="rl-row"><span>' + kv[0] + '</span>'
+              + '<span style="color:#f85149;font-weight:700">' + kv[1] + '</span></div>';
+          }).join('')
         : '<div style="color:#484f58;font-size:12px">Sin errores en 24h</div>');
 
-    const rl = s.protection?.rate_limiter_states || {};
+    var prot = s.protection || {};
+    var rl = prot.rate_limiter_states || {};
+    var rlKeys = Object.keys(rl);
     document.getElementById('glob-rl').innerHTML =
       '<div class="spark-label">Rate limiters</div>'
-      + (Object.keys(rl).length
-        ? Object.entries(rl).map(([k,v]) =>
-            '<div class="rl-row"><span style="font-size:12px">' + k + '</span><span>'
-            + (v.in_cooldown
-              ? '<span class="badge cooldown">COOLDOWN ' + v.cooldown_remaining_s + 's</span>'
-              : '<span class="badge ok">OK</span>')
-            + ' <span style="color:#484f58;font-size:11px">err:' + v.errors_in_window + '</span></span></div>'
-          ).join('')
+      + (rlKeys.length
+        ? rlKeys.map(function(k) {
+            var v = rl[k];
+            return '<div class="rl-row"><span style="font-size:12px">' + k + '</span><span>'
+              + (v.in_cooldown
+                ? '<span class="badge cooldown">COOLDOWN ' + v.cooldown_remaining_s + 's</span>'
+                : '<span class="badge ok">OK</span>')
+              + ' <span style="color:#484f58;font-size:11px">err:' + v.errors_in_window + '</span>'
+              + '</span></div>';
+          }).join('')
         : '<div style="color:#484f58;font-size:12px">Sin limiters activos</div>');
 
-    const trends = s.trends || {};
-    const urlData = trends.daily_urls_discovered || [];
+    var trends = s.trends || {};
+    var urlData = trends.daily_urls_discovered || [];
     document.getElementById('glob-trends').innerHTML =
-      '<div class="spark-label">URLs / día (7d)</div>'
-      + sparkline(urlData, 'total');
-  }
+      '<div class="spark-label">URLs / dia (7d)</div>' + sparkline(urlData, 'total');
+  })();
 
   // ── Global badge ─────────────────────────────────────────────────────────
-  const badge = document.getElementById('global-badge');
-  const err1h = _data.health?.recent_errors?.total_last_1h || 0;
-  const cooldown = Object.values(_data.summary?.protection?.rate_limiter_states || {}).some(r => r.in_cooldown);
+  var badge = document.getElementById('global-badge');
+  var hRE = h.recent_errors || {};
+  var err1h = hRE.total_last_1h || 0;
+  var prot2 = (s.protection || {}).rate_limiter_states || {};
+  var cooldown = Object.keys(prot2).some(function(k) { return prot2[k].in_cooldown; });
   if (cooldown || err1h > 10) { badge.textContent = 'ALERTA'; badge.className = 'global-badge err'; }
-  else if ((_data.health?.segment_progress?.failed || 0) > 0 || err1h > 2)
-    { badge.textContent = 'ADVERTENCIA'; badge.className = 'global-badge warn'; }
+  else if ((sp.failed || 0) > 0 || err1h > 2) { badge.textContent = 'ADVERTENCIA'; badge.className = 'global-badge warn'; }
   else { badge.textContent = 'OPERATIVO'; badge.className = 'global-badge ok'; }
 }
 
 // ── Sparkline ─────────────────────────────────────────────────────────────────
 function sparkline(data, key) {
   if (!data || !data.length) return '<span style="color:#484f58;font-size:12px">Sin datos</span>';
-  const vals = data.map(d => d[key] || 0);
-  const max = Math.max(...vals, 1);
-  const w = 280, h = 36, pad = 2;
-  const pts = vals.map((v,i) => {
-    const x = pad + (i / (vals.length-1||1)) * (w-2*pad);
-    const y = h - pad - (v/max) * (h-2*pad);
+  var vals = data.map(function(d) { return d[key] || 0; });
+  var max = Math.max.apply(null, vals.concat([1]));
+  var w = 280, h = 36, pad = 2;
+  var pts = vals.map(function(v, i) {
+    var x = pad + (i / ((vals.length-1)||1)) * (w-2*pad);
+    var y = h - pad - (v/max) * (h-2*pad);
     return x + ',' + y;
   }).join(' ');
   return '<svg class="sparkline" viewBox="0 0 ' + w + ' ' + h + '">'
@@ -669,21 +699,20 @@ function sparkline(data, key) {
 }
 
 // ── Data fetch ────────────────────────────────────────────────────────────────
-async function refresh() {
-  try {
-    const [health, summary] = await Promise.all([
-      fetch('/health/discovery').then(r => r.json()),
-      fetch('/ops/summary').then(r => r.json()),
-    ]);
-    _data = { health, summary };
+function refresh() {
+  Promise.all([
+    fetch('/health/discovery').then(function(r) { return r.json(); }),
+    fetch('/ops/summary').then(function(r) { return r.json(); }),
+  ]).then(function(results) {
+    _data = { health: results[0], summary: results[1] };
     renderAll();
     document.getElementById('last-updated').textContent =
       'Actualizado: ' + new Date().toLocaleTimeString('es-AR');
-  } catch(e) {
-    const b = document.getElementById('global-badge');
+  }).catch(function(e) {
+    var b = document.getElementById('global-badge');
     b.textContent = 'ERROR'; b.className = 'global-badge err';
     console.error('Dashboard error:', e);
-  }
+  });
 }
 
 refresh();
