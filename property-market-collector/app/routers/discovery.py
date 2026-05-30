@@ -149,6 +149,55 @@ async def trigger_incremental_monitor(
     }
 
 
+@router.post("/scheduler/pause-job/{job_id}")
+async def pause_scheduler_job(job_id: str):
+    """
+    Pausa un job del scheduler por ID (ej: weekly_segment_discovery, weekday_url_discovery).
+    El job queda registrado pero no se dispara hasta que se llame /resume-job.
+    """
+    from app.services.scheduler_service import get_scheduler
+    sched = get_scheduler()
+    job = sched.get_job(job_id)
+    if job is None:
+        from fastapi import HTTPException
+        raise HTTPException(404, f"Job '{job_id}' no encontrado")
+    job.pause()
+    return {"status": "paused", "job_id": job_id, "next_run": None}
+
+
+@router.post("/scheduler/resume-job/{job_id}")
+async def resume_scheduler_job(job_id: str):
+    """Reactiva un job previamente pausado."""
+    from app.services.scheduler_service import get_scheduler
+    sched = get_scheduler()
+    job = sched.get_job(job_id)
+    if job is None:
+        from fastapi import HTTPException
+        raise HTTPException(404, f"Job '{job_id}' no encontrado")
+    job.resume()
+    next_run = job.next_run_time
+    return {
+        "status": "resumed",
+        "job_id": job_id,
+        "next_run": next_run.isoformat() if next_run else None,
+    }
+
+
+@router.get("/scheduler/jobs")
+async def list_scheduler_jobs():
+    """Lista todos los jobs del scheduler con su próxima ejecución y estado."""
+    from app.services.scheduler_service import get_scheduler
+    sched = get_scheduler()
+    return [
+        {
+            "id": job.id,
+            "next_run": job.next_run_time.isoformat() if job.next_run_time else None,
+            "paused": job.next_run_time is None,
+        }
+        for job in sched.get_jobs()
+    ]
+
+
 @router.get("/segments")
 async def list_segments(
     portal: str = "zonaprop",
