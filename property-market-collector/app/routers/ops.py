@@ -418,13 +418,14 @@ function restoreLogState(cardId) {
 function triggerRun(svcKey, endpoint) {
   if (_loading[svcKey]) return;
   _loading[svcKey] = true; renderAll();
+  function done() { _loading[svcKey] = false; renderAll(); }
   api('POST', endpoint, {}).then(function() {
     toast(svcKey + ' iniciado', 'success');
     setTimeout(refresh, 1500);
-  }).catch(function(e) {
+    done();
+  }, function(e) {
     toast('Error: ' + e.message, 'error');
-  }).finally(function() {
-    _loading[svcKey] = false; renderAll();
+    done();
   });
 }
 
