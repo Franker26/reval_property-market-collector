@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import BigInteger, Boolean, Index, Integer, Numeric, Text, TIMESTAMP, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, ForeignKey, Index, Integer, Numeric, Text, TIMESTAMP, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -53,7 +53,7 @@ class ListingEntity(_ListingPayloadMixin, Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    source_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    source_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("market_sources.id"), nullable=False)
     external_id: Mapped[str] = mapped_column(Text, nullable=False)
     canonical_url: Mapped[Optional[str]] = mapped_column(Text)
     operation_type: Mapped[Optional[str]] = mapped_column(Text)
@@ -80,7 +80,7 @@ class ListingSnapshot(_ListingPayloadMixin, Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    listing_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    listing_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("listing_entities.id"), nullable=False)
     captured_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
     content_hash: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)

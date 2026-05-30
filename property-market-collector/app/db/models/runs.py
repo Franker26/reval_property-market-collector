@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import BigInteger, Boolean, Integer, Numeric, Text, TIMESTAMP
+from sqlalchemy import BigInteger, Boolean, ForeignKey, Integer, Numeric, Text, TIMESTAMP
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -16,7 +16,7 @@ class CollectionRun(Base):
     __tablename__ = "collection_runs"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    source_id: Mapped[Optional[int]] = mapped_column(BigInteger)
+    source_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("market_sources.id"))
     run_type: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="running")
 
@@ -38,9 +38,9 @@ class CollectionError(Base):
     __tablename__ = "collection_errors"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    run_id: Mapped[Optional[int]] = mapped_column(BigInteger)
-    source_id: Mapped[Optional[int]] = mapped_column(BigInteger)
-    listing_id: Mapped[Optional[int]] = mapped_column(BigInteger)
+    run_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("collection_runs.id"))
+    source_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("market_sources.id"))
+    listing_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("listing_entities.id"))
     external_id: Mapped[Optional[str]] = mapped_column(Text)
     url: Mapped[Optional[str]] = mapped_column(Text)
 
