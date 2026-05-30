@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
-from sqlalchemy import func, select, text
+from sqlalchemy import case, func, select
 
 from app.core.rate_limiter import get_all_limiter_states
 from app.db.models import CollectionError, CollectionRun, UrlDiscoverySegmentRun
@@ -46,7 +46,7 @@ async def ops_summary():
                 func.avg(UrlDiscoverySegmentRun.avg_latency_ms).label("avg_latency_ms"),
                 func.max(UrlDiscoverySegmentRun.max_latency_ms).label("max_latency_ms"),
                 func.sum(
-                    func.cast(UrlDiscoverySegmentRun.cooldown_triggered, type_=None)
+                    case((UrlDiscoverySegmentRun.cooldown_triggered == True, 1), else_=0)  # noqa: E712
                 ).label("cooldown_count"),
             )
             .where(
@@ -87,31 +87,27 @@ async def ops_summary():
         cooldowns_today = cooldown_today.scalar_one() or 0
 
         # Trends: últimos 7 días de urls_discovered y errores por día
+        _seg_day = func.date_trunc("day", UrlDiscoverySegmentRun.completed_at)
         trends_url_result = await session.execute(
-            select(
-                func.date_trunc("day", UrlDiscoverySegmentRun.completed_at).label("day"),
-                func.sum(UrlDiscoverySegmentRun.listings_found).label("total"),
-            )
+            select(_seg_day.label("day"), func.sum(UrlDiscoverySegmentRun.listings_found).label("total"))
             .where(
                 UrlDiscoverySegmentRun.status == "complete",
                 UrlDiscoverySegmentRun.completed_at >= now - timedelta(days=7),
             )
-            .group_by(text("day"))
-            .order_by(text("day"))
+            .group_by(_seg_day)
+            .order_by(_seg_day)
         )
         daily_urls = [
             {"day": row.day.strftime("%Y-%m-%d"), "total": int(row.total or 0)}
             for row in trends_url_result
         ]
 
+        _err_day = func.date_trunc("day", CollectionError.failed_at)
         trends_err_result = await session.execute(
-            select(
-                func.date_trunc("day", CollectionError.failed_at).label("day"),
-                func.count().label("total"),
-            )
+            select(_err_day.label("day"), func.count().label("total"))
             .where(CollectionError.failed_at >= now - timedelta(days=7))
-            .group_by(text("day"))
-            .order_by(text("day"))
+            .group_by(_err_day)
+            .order_by(_err_day)
         )
         daily_errors = [
             {"day": row.day.strftime("%Y-%m-%d"), "total": int(row.total or 0)}
@@ -119,17 +115,14 @@ async def ops_summary():
         ]
 
         trends_lat_result = await session.execute(
-            select(
-                func.date_trunc("day", UrlDiscoverySegmentRun.completed_at).label("day"),
-                func.avg(UrlDiscoverySegmentRun.avg_latency_ms).label("avg_ms"),
-            )
+            select(_seg_day.label("day"), func.avg(UrlDiscoverySegmentRun.avg_latency_ms).label("avg_ms"))
             .where(
                 UrlDiscoverySegmentRun.status == "complete",
                 UrlDiscoverySegmentRun.completed_at >= now - timedelta(days=7),
                 UrlDiscoverySegmentRun.avg_latency_ms.isnot(None),
             )
-            .group_by(text("day"))
-            .order_by(text("day"))
+            .group_by(_seg_day)
+            .order_by(_seg_day)
         )
         daily_latency = [
             {"day": row.day.strftime("%Y-%m-%d"), "avg_ms": round(float(row.avg_ms), 1) if row.avg_ms else None}
