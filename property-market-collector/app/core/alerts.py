@@ -57,23 +57,28 @@ class TelegramAlertHandler:
     async def send(self, event: AlertEvent) -> None:
         severity_emoji = "🔴" if event.severity == "critical" else "⚠️"
         lines = [
-            f"{severity_emoji} *{event.event_type.upper()}*",
+            f"{severity_emoji} [{event.event_type.upper()}]",
             event.message,
         ]
         if event.metadata:
             meta_str = " | ".join(f"{k}: {v}" for k, v in event.metadata.items())
-            lines.append(f"_{meta_str}_")
+            lines.append(meta_str)
         lines.append(f"🕐 {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S UTC')}")
         text = "\n".join(lines)
 
         try:
+            import json as _json
             from curl_cffi.requests import AsyncSession
-            async with AsyncSession() as session:
+            session = AsyncSession()
+            try:
                 await session.post(
                     self._url,
-                    json={"chat_id": self._chat_id, "text": text, "parse_mode": "Markdown"},
+                    data=_json.dumps({"chat_id": self._chat_id, "text": text}),
+                    headers={"Content-Type": "application/json"},
                     timeout=10,
                 )
+            finally:
+                await session.close()
         except Exception as exc:
             log.warning("TelegramAlertHandler: fallo al enviar alerta — %s", exc)
 
