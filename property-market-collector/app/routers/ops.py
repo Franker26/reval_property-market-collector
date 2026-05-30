@@ -498,7 +498,7 @@ function schedBtn(jobId, jobs) {
   if (!j) return '';
   var paused = j.paused;
   var nextStr = paused ? 'Pausado' : fmtLocalDow(j.next_run);
-  return '<button class="sched-btn" onclick="toggleSchedule(\'' + jobId + '\',' + paused + ')">'
+  return '<button class="sched-btn" onclick="toggleSchedule(&#39;' + jobId + '&#39;,' + paused + ')">'
     + '<span class="sched-dot ' + (paused ? 'off' : 'on') + '"></span>'
     + '<span>' + (paused ? 'PAUSADO' : 'ACTIVO') + '</span>'
     + '<span class="sched-next">| ' + nextStr + '</span>'
@@ -519,8 +519,8 @@ function buildCard(id, title, isRunning, durationS, progressHtml, chipsHtml, act
     + '<div class="actions-row">' + actionsHtml + '</div>'
     + '<div class="log-section">'
     + '<div class="log-header">'
-    + '<button class="log-toggle" onclick="toggleLogs(\'' + id + '\',\'' + logKeyword + '\')">► Ver logs</button>'
-    + '<button class="log-refresh" onclick="loadLogs(\'' + id + '\',\'' + logKeyword + '\')" title="Refrescar">↺</button>'
+    + '<button class="log-toggle" onclick="toggleLogs(&#39;' + id + '&#39;,&#39;' + logKeyword + '&#39;)">► Ver logs</button>'
+    + '<button class="log-refresh" onclick="loadLogs(&#39;' + id + '&#39;,&#39;' + logKeyword + '&#39;)" title="Refrescar">&#8635;</button>'
     + '</div>'
     + '<div class="log-box"></div>'
     + '</div></div>';
@@ -556,9 +556,9 @@ function renderAll() {
     ].join('');
     var ld = _loading['segment_discovery'];
     var acts = [
-      '<button class="btn btn-run" onclick="triggerRun(\'segment_discovery\',\'/discovery/segment-discovery\')"'
+      '<button class="btn btn-run" onclick="triggerRun(&#39;segment_discovery&#39;,&#39;/discovery/segment-discovery&#39;)"'
         + (ld ? ' disabled' : '') + '>' + (ld ? 'Iniciando...' : '► Ejecutar') + '</button>',
-      '<button class="btn btn-stop" onclick="cancelRun(\'segment_discovery\')"'
+      '<button class="btn btn-stop" onclick="cancelRun(&#39;segment_discovery&#39;)"'
         + (!running ? ' disabled' : '') + '>■ Cancelar</button>',
       schedBtn('weekly_segment_discovery', jobs),
     ].join('');
@@ -594,9 +594,9 @@ function renderAll() {
     ].join('');
     var ld = _loading['url_discovery'];
     var acts = [
-      '<button class="btn btn-run" onclick="triggerRun(\'url_discovery\',\'/discovery/url-discovery\')"'
+      '<button class="btn btn-run" onclick="triggerRun(&#39;url_discovery&#39;,&#39;/discovery/url-discovery&#39;)"'
         + (ld ? ' disabled' : '') + '>' + (ld ? 'Iniciando...' : '► Ejecutar') + '</button>',
-      '<button class="btn btn-stop" onclick="cancelRun(\'url_discovery\')"'
+      '<button class="btn btn-stop" onclick="cancelRun(&#39;url_discovery&#39;)"'
         + (!running ? ' disabled' : '') + '>■ Cancelar</button>',
       schedBtn('weekday_url_discovery', jobs),
     ].join('');
@@ -623,9 +623,9 @@ function renderAll() {
     ].join('');
     var ld = _loading['incremental_monitor'];
     var acts = [
-      '<button class="btn btn-run" onclick="triggerRun(\'incremental_monitor\',\'/discovery/incremental-monitor\')"'
+      '<button class="btn btn-run" onclick="triggerRun(&#39;incremental_monitor&#39;,&#39;/discovery/incremental-monitor&#39;)"'
         + (ld ? ' disabled' : '') + '>' + (ld ? 'Iniciando...' : '► Ejecutar') + '</button>',
-      '<button class="btn btn-stop" onclick="cancelRun(\'incremental_monitor\')"'
+      '<button class="btn btn-stop" onclick="cancelRun(&#39;incremental_monitor&#39;)"'
         + (!running ? ' disabled' : '') + '>■ Cancelar</button>',
     ].join('');
     var el = document.getElementById('card-' + id);
