@@ -5,3 +5,4 @@ property-market-collector/data
 **/*.pyc
 **/.codegraph
 .codegraph
+.env
