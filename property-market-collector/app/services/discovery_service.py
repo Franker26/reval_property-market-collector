@@ -22,6 +22,26 @@ log = logging.getLogger(__name__)
 _ALERT_ERROR_RATE_THRESHOLD = int(os.getenv("ALERT_ERROR_RATE_THRESHOLD", "10"))
 _ALERT_CONSECUTIVE_4XX_THRESHOLD = int(os.getenv("ALERT_CONSECUTIVE_4XX_THRESHOLD", "3"))
 
+# ── Cancellation ──────────────────────────────────────────────────────────────
+
+_cancel_flags: dict[str, bool] = {}
+
+
+class _RunCancelled(Exception):
+    pass
+
+
+def request_cancel(run_type: str) -> None:
+    _cancel_flags[run_type] = True
+
+
+def is_cancel_requested(run_type: str) -> bool:
+    return _cancel_flags.get(run_type, False)
+
+
+def _reset_cancel(run_type: str) -> None:
+    _cancel_flags.pop(run_type, None)
+
 
 # ── Fase 1: Segment Discovery (semanal) ───────────────────────────────────────
 
@@ -38,6 +58,8 @@ async def run_segment_discovery(
     """
     from discovery.zonaprop.segment_config import load_config
     from discovery.zonaprop.segment_discovery import run_segment_discovery as _discover
+
+    _reset_cancel("segment_discovery")
 
     cfg = load_config()
     if operations:
@@ -77,6 +99,8 @@ async def run_segment_discovery(
 
     async def on_leaf(node) -> None:
         nonlocal leaf_count, oversized_count
+        if is_cancel_requested("segment_discovery"):
+            raise _RunCancelled("Cancelación solicitada por el usuario")
         leaf_count += 1
         if node.is_oversized:
             oversized_count += 1
@@ -113,6 +137,9 @@ async def run_segment_discovery(
     try:
         await _discover(cfg, on_leaf_found=on_leaf)
         final_status = "success"
+    except _RunCancelled:
+        log.info("discovery_service: segment_discovery cancelado por el usuario (run_id=%d)", run_id)
+        final_status = "cancelled"
     except Exception as exc:
         log.error("discovery_service: segment_discovery falló — %s", exc)
         final_status = "failed"
@@ -159,6 +186,8 @@ async def run_url_discovery_window(
     Consume runs pendientes de url_discovery_segment_runs hasta alcanzar stop_at.
     Cada segmento se procesa completo; el chequeo de tiempo ocurre entre segmentos.
     """
+    _reset_cancel("url_discovery")
+
     from discovery.zonaprop.url_discovery import run_url_discovery as _discover
 
     factory = get_async_session_factory()
@@ -198,6 +227,9 @@ async def run_url_discovery_window(
     window_error_count = 0
 
     for run in pending:
+        if is_cancel_requested("url_discovery"):
+            log.info("url_discovery_window: cancelación solicitada — deteniendo")
+            break
         if datetime.now(timezone.utc) >= stop_at.astimezone(timezone.utc):
             log.info("url_discovery_window: ventana horaria alcanzada — deteniendo")
             break
@@ -329,6 +361,8 @@ async def run_url_discovery(
     """
     Pagina los segmentos hoja y persiste publicaciones en listing_entities.
     """
+    _reset_cancel("url_discovery")
+
     from discovery.zonaprop.url_discovery import run_url_discovery as _discover
 
     factory = get_async_session_factory()
@@ -356,6 +390,8 @@ async def run_url_discovery(
 
     async def persist(postings: list[dict], page_num: int) -> None:
         nonlocal total_written
+        if is_cancel_requested("url_discovery"):
+            raise _RunCancelled("Cancelación solicitada por el usuario")
         from app.repositories import snapshots as snap_repo
         async with factory() as session:
             async with session.begin():
@@ -410,6 +446,10 @@ async def run_url_discovery(
             max_pages_per_segment=max_pages_per_segment,
         )
         final_status = "success" if agg["total_found"] > 0 else "partial"
+    except _RunCancelled:
+        log.info("discovery_service: url_discovery cancelado por el usuario (run_id=%d)", run_id)
+        agg = {"total_found": 0, "segments_processed": 0, "segments_failed": 0}
+        final_status = "cancelled"
     except Exception as exc:
         log.error("discovery_service: url_discovery falló — %s", exc)
         agg = {"total_found": 0, "segments_processed": 0, "segments_failed": 0}
@@ -445,6 +485,8 @@ async def run_incremental_monitor(
     """
     Compara total_count actual con el snapshot anterior y rescanea si cambió.
     """
+    _reset_cancel("incremental_monitor")
+
     from discovery.zonaprop.segment_config import load_config
     from discovery.zonaprop.incremental_monitor import run_incremental_monitor as _monitor
 

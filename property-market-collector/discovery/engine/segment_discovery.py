@@ -6,7 +6,11 @@ Portal-agnostic: opera a través de PortalAdapter.
 
 Divide el espacio precio × superficie recursivamente hasta que cada
 segmento hoja tenga total_count <= max_results_per_segment.
-Prioridad: superficie primero, precio como fallback.
+
+Dimensión elegida dinámicamente en cada nodo:
+  1. Precio, mientras el rango de precio sea > min_price_range.
+  2. Superficie, cuando el rango de precio ya es demasiado estrecho.
+  3. Sin subdivisión posible → nodo oversized (hoja forzada).
 """
 from __future__ import annotations
 
@@ -118,9 +122,12 @@ async def _build_tree(
         node.is_oversized = True
         log.warning(
             "segment_discovery[%s]: sin subdivisión posible → oversized_leaf "
-            "op=%s loc=%s s=[%g-%g] p=[%g-%g] count=%d",
+            "op=%s loc=%s s=[%g-%g] p=[%g-%g] count=%d "
+            "(ancho_precio=%g ancho_sup=%g mín_precio=%g mín_sup=%g)",
             adapter.portal, node.operation_key, node.location_key,
             node.surface_min, node.surface_max, node.price_min, node.price_max, count,
+            node.price_max - node.price_min, node.surface_max - node.surface_min,
+            cfg.min_price_range, cfg.min_surface_range_m2,
         )
         if on_leaf_found:
             await on_leaf_found(node)
@@ -135,38 +142,40 @@ async def _build_tree(
 
 def _make_children(node: SegmentNode, cfg) -> list[SegmentNode]:
     """
-    Retorna los dos hijos del nodo según la prioridad configurada,
-    o lista vacía si no se puede subdividir en ninguna dimensión.
-    Menor número = mayor prioridad.
+    Elige dinámicamente la dimensión de split por etapas:
+      1. Precio, mientras ancho_precio > min_price_range.
+      2. Superficie, cuando precio ya está demasiado fino.
+      3. Lista vacía → el nodo se marcará como oversized.
+
+    La elección es por nodo, no global: un segmento puede dividirse por precio
+    varios niveles y luego pasar a superficie cuando el rango de precio se agota.
     """
-    candidates: list[tuple[int, str]] = []
-
-    surface_range = node.surface_max - node.surface_min
-    if cfg.surface_split_enabled and surface_range >= cfg.min_surface_range_m2 * 2:
-        candidates.append((cfg.surface_split_priority, "surface"))
-
     price_range = node.price_max - node.price_min
-    if cfg.price_split_enabled and price_range >= cfg.min_price_range * 2:
-        candidates.append((cfg.price_split_priority, "price"))
+    surface_range = node.surface_max - node.surface_min
 
-    if not candidates:
-        return []
-
-    candidates.sort(key=lambda x: x[0])
-    dimension = candidates[0][1]
-
-    if dimension == "surface":
-        mid = (node.surface_min + node.surface_max) / 2
-        return [
-            _child(node, surface_min=node.surface_min, surface_max=mid),
-            _child(node, surface_min=mid, surface_max=node.surface_max),
-        ]
-    else:
+    if cfg.price_split_enabled and price_range > cfg.min_price_range:
         mid = (node.price_min + node.price_max) / 2
+        log.debug(
+            "_make_children: split precio p=[%g-%g] (rango=%g > mín=%g)",
+            node.price_min, node.price_max, price_range, cfg.min_price_range,
+        )
         return [
             _child(node, price_min=node.price_min, price_max=mid),
             _child(node, price_min=mid, price_max=node.price_max),
         ]
+
+    if cfg.surface_split_enabled and surface_range > cfg.min_surface_range_m2:
+        mid = (node.surface_min + node.surface_max) / 2
+        log.debug(
+            "_make_children: split superficie s=[%g-%g] (rango=%g > mín=%g) — precio agotado",
+            node.surface_min, node.surface_max, surface_range, cfg.min_surface_range_m2,
+        )
+        return [
+            _child(node, surface_min=node.surface_min, surface_max=mid),
+            _child(node, surface_min=mid, surface_max=node.surface_max),
+        ]
+
+    return []
 
 
 def _child(

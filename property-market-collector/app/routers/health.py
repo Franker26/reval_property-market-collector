@@ -43,6 +43,12 @@ async def discovery_health():
         )
         last_error = await errors_repo.get_last(session)
 
+        last_seg_disc = await runs_repo.get_last_completed(session, run_type="segment_discovery")
+        last_url_disc = await runs_repo.get_last_completed(session, run_type="url_discovery_window")
+        if last_url_disc is None:
+            last_url_disc = await runs_repo.get_last_completed(session, run_type="url_discovery")
+        last_incr_mon = await runs_repo.get_last_completed(session, run_type="incremental_monitor")
+
         # Progreso en vivo de segment_discovery: cuántos market_segments se crearon
         seg_disc_result = await session.execute(
             select(
@@ -104,10 +110,28 @@ async def discovery_health():
     except Exception:
         scheduler_jobs = []
 
+    def _run_brief(r):
+        if r is None:
+            return None
+        return {
+            "id": r.id,
+            "run_type": r.run_type,
+            "status": r.status,
+            "started_at": r.started_at.isoformat() if r.started_at else None,
+            "finished_at": r.finished_at.isoformat() if r.finished_at else None,
+            "duration_seconds": float(r.duration_seconds) if r.duration_seconds else None,
+            "stats": r.stats_json,
+        }
+
     return {
         "timestamp": now.isoformat(),
         "active_run": active_run_data,
         "last_completed_run": last_run_data,
+        "last_completed_by_type": {
+            "segment_discovery": _run_brief(last_seg_disc),
+            "url_discovery": _run_brief(last_url_disc),
+            "incremental_monitor": _run_brief(last_incr_mon),
+        },
         "segment_discovery": {
             "segments_total": int(sd.total or 0),
             "leaves": int(sd.leaves or 0),

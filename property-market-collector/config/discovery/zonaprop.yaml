@@ -2,17 +2,20 @@ max_results_per_segment: 2000
 min_surface_m2: 0
 max_surface_m2: 10000
 min_price: 0
-max_price: 10000000000
+max_price: 10000000        # 10M USD — cubre el 99.9% del mercado argentino en Zonaprop
 
 surface_split_enabled: true
 price_split_enabled: true
 
+# Nota: surface_split_priority y price_split_priority ya no controlan el orden.
+# El algoritmo elige dinámicamente: precio primero (mientras ancho > min_price_range),
+# luego superficie cuando precio está agotado.
 surface_split_priority: 2
 price_split_priority: 1
 
 max_depth: 20
-min_surface_range_m2: 5
-min_price_range: 1000
+min_surface_range_m2: 10   # rango mínimo de superficie: 10 m²
+min_price_range: 10000     # rango mínimo de precio: USD 10.000
 
 minor_delta_ratio: 0.02
 major_delta_ratio: 0.10
