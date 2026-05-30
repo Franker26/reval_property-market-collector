@@ -2,7 +2,7 @@ max_results_per_segment: 2000
 min_surface_m2: 0
 max_surface_m2: 10000
 min_price: 0
-max_price: 50000000
+max_price: 10000000000
 
 surface_split_enabled: true
 price_split_enabled: true

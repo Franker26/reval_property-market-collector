@@ -106,7 +106,7 @@ class ZonapropAdapter:
         return {
             "q": None,
             "direccion": None,
-            "moneda": "",
+            "moneda": "2",
             "preciomin": int(price_min) if price_min and price_min > 0 else None,
             "preciomax": int(price_max) if price_max is not None else None,
             "services": "",

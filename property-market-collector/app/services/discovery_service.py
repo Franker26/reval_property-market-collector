@@ -61,6 +61,13 @@ async def run_segment_discovery(
         await session.commit()
         run_id = run.id
 
+    from app.core.alerts import dispatch
+    await dispatch(
+        "run_started", "warning",
+        f"segment_discovery iniciado para {portal}",
+        {"run_id": run_id, "portal": portal, "operations": str(operations or "all"), "locations": str(locations or "all")},
+    )
+
     async with factory() as session:
         async with session.begin():
             await seg_repo.deactivate_portal_segments(session, portal)
@@ -124,6 +131,15 @@ async def run_segment_discovery(
     async with factory() as session:
         async with session.begin():
             new_runs = await seg_repo.sync_pending_segment_runs(session, portal)
+
+    from app.core.alerts import dispatch
+    await dispatch(
+        "run_completed" if final_status == "success" else "run_failed",
+        "warning" if final_status == "success" else "critical",
+        f"segment_discovery {final_status} para {portal}",
+        {"run_id": run_id, "portal": portal, "leaves": leaf_count, "oversized": oversized_count, "new_runs": new_runs},
+    )
+
     log.info(
         "discovery_service: segment_discovery run_id=%d status=%s leaves=%d oversized=%d new_runs=%d",
         run_id, final_status, leaf_count, oversized_count, new_runs,
@@ -169,6 +185,13 @@ async def run_url_discovery_window(
     log.info(
         "url_discovery_window: %d segmentos pendientes — stop_at=%s",
         len(pending), stop_at.strftime("%H:%M %Z"),
+    )
+
+    from app.core.alerts import dispatch
+    await dispatch(
+        "run_started", "warning",
+        f"url_discovery_window iniciado para {portal}",
+        {"portal": portal, "pending_segments": len(pending), "stop_at": stop_at.strftime("%H:%M %Z")},
     )
 
     stats: dict = {"processed": 0, "complete": 0, "stopped_early": 0, "failed": 0}
@@ -282,6 +305,13 @@ async def run_url_discovery_window(
             stats["failed"] += 1
 
         stats["processed"] += 1
+
+    from app.core.alerts import dispatch
+    await dispatch(
+        "run_completed", "warning",
+        f"url_discovery_window finalizado para {portal}",
+        {"portal": portal, **stats},
+    )
 
     return {"status": "done", **stats}
 
