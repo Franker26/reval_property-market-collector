@@ -77,6 +77,19 @@ async def discovery_health():
     complete = segment_counts.get("complete", 0)
     progress_pct = round(complete / total_segments * 100, 1) if total_segments > 0 else None
 
+    try:
+        from app.services.scheduler_service import get_scheduler
+        scheduler_jobs = [
+            {
+                "id": job.id,
+                "next_run": job.next_run_time.isoformat() if job.next_run_time else None,
+                "paused": job.next_run_time is None,
+            }
+            for job in get_scheduler().get_jobs()
+        ]
+    except Exception:
+        scheduler_jobs = []
+
     return {
         "timestamp": now.isoformat(),
         "active_run": active_run_data,
@@ -89,6 +102,7 @@ async def discovery_health():
             "total": total_segments,
             "progress_pct": progress_pct,
         },
+        "scheduler": scheduler_jobs,
         "rate_limiters": get_all_limiter_states(),
         "recent_errors": {
             "last_1h": errors_last_hour,

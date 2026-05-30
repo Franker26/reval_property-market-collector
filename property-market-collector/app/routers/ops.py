@@ -298,6 +298,19 @@ function sparkline(data, key) {
   </svg>`;
 }
 
+function renderScheduler(jobs) {
+  if (!jobs || !jobs.length) return '<span class="empty">sin datos</span>';
+  return jobs.map(j => `
+    <div class="rl-row">
+      <span style="font-size:12px">${j.id}</span>
+      <span>${j.paused
+        ? '<span class="badge warning">PAUSADO</span>'
+        : '<span class="badge success">ACTIVO</span>'}
+        <span style="color:#718096;margin-left:8px;font-size:11px">${j.next_run ? 'próx: ' + new Date(j.next_run).toLocaleString('es-AR') : '—'}</span>
+      </span>
+    </div>`).join('');
+}
+
 function renderRateLimiters(rl) {
   if (!rl || !Object.keys(rl).length) return '<span class="empty">ninguno activo</span>';
   return Object.entries(rl).map(([k, v]) => `
@@ -351,7 +364,7 @@ function render(data) {
   root.innerHTML = `
     <!-- Estado General -->
     <div class="section-title">Estado General</div>
-    <div class="grid grid-4">
+    <div class="grid" style="grid-template-columns:repeat(5,1fr)">
       <div class="card">
         <h2>Último Run</h2>
         ${last_run ? `
@@ -390,6 +403,10 @@ function render(data) {
           <div class="stat"><label>Último error</label><div class="value sm">${data.last_error.error_type}</div></div>
           <div style="font-size:11px;color:#718096">${fmtTs(data.last_error?.failed_at)}</div>
         ` : '<div style="color:#68d391;font-size:13px;margin-top:8px">Sin errores recientes</div>'}
+      </div>
+      <div class="card">
+        <h2>Scheduler</h2>
+        ${renderScheduler(data.scheduler)}
       </div>
     </div>
 
