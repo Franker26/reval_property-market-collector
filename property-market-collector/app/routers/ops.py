@@ -373,6 +373,15 @@ function render(data) {
           <div class="stat"><label>Tipo</label><div class="value sm">${data.active_run.run_type}</div></div>
           <div class="stat"><label>Estado</label><div>${badge('running')}</div></div>
           <div class="stat"><label>Duración</label><div class="value sm">${fmtDur(data.active_run.duration_so_far_s)}</div></div>
+          ${data.active_run.run_type === 'segment_discovery' && data.segment_discovery ? `
+            <hr style="border-color:#2d3748;margin:10px 0">
+            <div style="font-size:12px;color:#718096;margin-bottom:4px">Segmentos descubiertos</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;font-size:12px;text-align:center">
+              <div><div style="font-size:18px;font-weight:700;color:#90cdf4">${fmtNum(data.segment_discovery.segments_total)}</div><div style="color:#718096">total</div></div>
+              <div><div style="font-size:18px;font-weight:700;color:#68d391">${fmtNum(data.segment_discovery.leaves)}</div><div style="color:#718096">hojas</div></div>
+              <div><div style="font-size:18px;font-weight:700;color:#f6ad55">${fmtNum(data.segment_discovery.oversized)}</div><div style="color:#718096">oversized</div></div>
+            </div>
+          ` : ''}
         ` : '<div style="color:#68d391;font-size:13px;margin-top:8px">— En reposo —</div>'}
       </div>
       <div class="card">

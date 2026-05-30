@@ -6,7 +6,10 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sqlalchemy import case, func, select
+
 from app.core.rate_limiter import get_all_limiter_states
+from app.db.models import MarketSegment
 from app.db.session import get_async_session_factory
 from app.repositories import collection_errors as errors_repo
 from app.repositories import collection_runs as runs_repo
@@ -39,6 +42,17 @@ async def discovery_health():
             session, since=now - timedelta(hours=1)
         )
         last_error = await errors_repo.get_last(session)
+
+        # Progreso en vivo de segment_discovery: cuántos market_segments se crearon
+        seg_disc_result = await session.execute(
+            select(
+                func.count().label("total"),
+                func.sum(case((MarketSegment.is_leaf == True, 1), else_=0)).label("leaves"),  # noqa: E712
+                func.sum(case((MarketSegment.is_oversized == True, 1), else_=0)).label("oversized"),  # noqa: E712
+            )
+            .where(MarketSegment.status == "active")
+        )
+        sd = seg_disc_result.one()
 
     active_run_data = None
     if active_run:
@@ -94,6 +108,11 @@ async def discovery_health():
         "timestamp": now.isoformat(),
         "active_run": active_run_data,
         "last_completed_run": last_run_data,
+        "segment_discovery": {
+            "segments_total": int(sd.total or 0),
+            "leaves": int(sd.leaves or 0),
+            "oversized": int(sd.oversized or 0),
+        },
         "segment_progress": {
             "pending": segment_counts.get("pending", 0),
             "running": segment_counts.get("running", 0),
