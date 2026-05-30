@@ -31,7 +31,7 @@ class SegmentConfig:
     min_surface_m2: float = 0.0
     max_surface_m2: float = 10000.0
     min_price: float = 0.0
-    max_price: float = 50_000_000.0
+    max_price: float = 10000000.0
 
     surface_split_enabled: bool = True
     price_split_enabled: bool = True
