@@ -69,6 +69,7 @@ async def discovery_health():
         active_run_data = {
             "id": active_run.id,
             "run_type": active_run.run_type,
+            "status": active_run.status,
             "started_at": active_run.started_at.isoformat() if active_run.started_at else None,
             "duration_so_far_s": round(duration_so_far),
             "params": active_run.params_json,

@@ -24,23 +24,38 @@ _ALERT_CONSECUTIVE_4XX_THRESHOLD = int(os.getenv("ALERT_CONSECUTIVE_4XX_THRESHOL
 
 # ── Cancellation ──────────────────────────────────────────────────────────────
 
-_cancel_flags: dict[str, bool] = {}
+# Niveles: 0 = ninguno, 1 = stopping (termina segmento actual), 2 = force_stop (aborta segmento)
+_cancel_flags: dict[str, int] = {}
+_active_runs: dict[str, int] = {}   # run_type → col_run_id del run activo
 
 
 class _RunCancelled(Exception):
     pass
 
 
-def request_cancel(run_type: str) -> None:
-    _cancel_flags[run_type] = True
+def request_cancel(run_type: str) -> int:
+    """Incrementa el nivel de parada. Devuelve el nuevo nivel: 1=stopping, 2=force_stop."""
+    current = _cancel_flags.get(run_type, 0)
+    new_level = min(current + 1, 2)
+    _cancel_flags[run_type] = new_level
+    return new_level
 
 
 def is_cancel_requested(run_type: str) -> bool:
-    return _cancel_flags.get(run_type, False)
+    return _cancel_flags.get(run_type, 0) >= 1
+
+
+def is_force_stop_requested(run_type: str) -> bool:
+    return _cancel_flags.get(run_type, 0) >= 2
+
+
+def get_active_run_id(run_type: str) -> Optional[int]:
+    return _active_runs.get(run_type)
 
 
 def _reset_cancel(run_type: str) -> None:
     _cancel_flags.pop(run_type, None)
+    _active_runs.pop(run_type, None)
 
 
 # ── Fase 1: Segment Discovery (semanal) ───────────────────────────────────────
@@ -232,6 +247,8 @@ async def run_url_discovery_window(
         await session.commit()
         col_run_id = col_run.id
 
+    _active_runs["url_discovery"] = col_run_id
+
     from app.core.alerts import dispatch
     await dispatch(
         "run_started", "warning",
@@ -313,7 +330,12 @@ async def run_url_discovery_window(
         error_fn = await make_error_fn(run.id, segment_id)
 
         try:
-            seg_stats = await _discover([run.segment], persist_fn=persist, error_fn=error_fn)
+            seg_stats = await _discover(
+                [run.segment],
+                persist_fn=persist,
+                error_fn=error_fn,
+                cancel_fn=lambda: is_force_stop_requested("url_discovery"),
+            )
             per_seg = seg_stats.get("per_segment", [{}])
             seg_info = per_seg[0] if per_seg else {}
             stopped_early = seg_info.get("stopped_early", False)
@@ -355,7 +377,13 @@ async def run_url_discovery_window(
 
         stats["processed"] += 1
 
-    final_status = "cancelled" if is_cancel_requested("url_discovery") else "success"
+    stop_level = _cancel_flags.get("url_discovery", 0)
+    if stop_level >= 2:
+        final_status = "force_stopped"
+    elif stop_level >= 1:
+        final_status = "cancelled"
+    else:
+        final_status = "success"
     async with factory() as session:
         await runs_repo.finish(session, col_run_id, status=final_status, stats=stats)
         await session.commit()

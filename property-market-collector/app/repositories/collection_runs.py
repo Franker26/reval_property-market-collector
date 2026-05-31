@@ -53,10 +53,10 @@ async def finish(
 
 
 async def reset_stale_running_runs(session: AsyncSession) -> int:
-    """Marca como 'failed' los collection_runs que quedaron en 'running' al reiniciar."""
+    """Marca como 'failed' los collection_runs que quedaron activos al reiniciar."""
     result = await session.execute(
         update(CollectionRun)
-        .where(CollectionRun.status == "running")
+        .where(CollectionRun.status.in_(["running", "stopping", "force_stopping"]))
         .values(status="failed", finished_at=datetime.utcnow())
     )
     return result.rowcount  # type: ignore[return-value]
@@ -66,11 +66,20 @@ async def get_by_id(session: AsyncSession, run_id: int) -> Optional[CollectionRu
     return await session.get(CollectionRun, run_id)
 
 
+async def update_status(session: AsyncSession, run_id: int, status: str) -> None:
+    """Actualiza el status de un run sin cerrar el run (sin finished_at)."""
+    await session.execute(
+        update(CollectionRun)
+        .where(CollectionRun.id == run_id)
+        .values(status=status)
+    )
+
+
 async def get_active(session: AsyncSession) -> Optional[CollectionRun]:
-    """Devuelve el run actualmente en estado 'running', si existe."""
+    """Devuelve el run activo (running/stopping/force_stopping), si existe."""
     result = await session.execute(
         select(CollectionRun)
-        .where(CollectionRun.status == "running")
+        .where(CollectionRun.status.in_(["running", "stopping", "force_stopping"]))
         .order_by(CollectionRun.id.desc())
         .limit(1)
     )

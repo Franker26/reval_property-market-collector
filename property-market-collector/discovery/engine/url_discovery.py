@@ -67,6 +67,7 @@ async def discover_segment(
     max_pages: Optional[int] = None,
     persist_fn: Optional[Callable[[list[dict], int], Awaitable[None]]] = None,
     error_fn: Optional[Callable[..., Awaitable[None]]] = None,
+    cancel_fn: Optional[Callable[[], bool]] = None,
 ) -> dict:
     """
     Pagina la API del portal para un segmento y extrae publicaciones.
@@ -87,10 +88,19 @@ async def discover_segment(
     }
     metrics = _RequestMetrics()
     consecutive_4xx: dict[int, int] = {403: 0, 429: 0}
+    seen_ids: set[str] = set()
 
     page_num = 1
     while True:
         if max_pages is not None and page_num > max_pages:
+            stats["stopped_early"] = True
+            break
+
+        if cancel_fn is not None and cancel_fn():
+            log.info(
+                "url_discovery[%s]: parada forzosa — abortando segmento en pág %d",
+                adapter.portal, page_num,
+            )
             stats["stopped_early"] = True
             break
 
@@ -184,6 +194,17 @@ async def discover_segment(
             if (p := adapter.parse_posting(raw))
         ]
 
+        # Detección de loop infinito: Zonaprop a veces recicla páginas en lugar de devolver vacío
+        page_ids = {p["external_id"] for p in parsed if p.get("external_id")}
+        if page_ids and page_ids.issubset(seen_ids):
+            log.warning(
+                "url_discovery[%s]: página %d reciclada (%d IDs ya vistos) — fin del segmento",
+                adapter.portal, page_num, len(page_ids),
+            )
+            stats["recycled_page"] = True
+            break
+        seen_ids.update(page_ids)
+
         stats["pages_ok"] += 1
         stats["total_found"] += len(parsed)
 
@@ -207,6 +228,7 @@ async def run_url_discovery(
     persist_fn: Optional[Callable[[list[dict], int], Awaitable[None]]] = None,
     error_fn: Optional[Callable[..., Awaitable[None]]] = None,
     max_pages_per_segment: Optional[int] = None,
+    cancel_fn: Optional[Callable[[], bool]] = None,
 ) -> dict:
     """
     Ejecuta url_discovery sobre una lista de segmentos hoja.
@@ -257,6 +279,7 @@ async def run_url_discovery(
                 max_pages=max_pages_per_segment,
                 persist_fn=persist_fn,
                 error_fn=error_fn,
+                cancel_fn=cancel_fn,
             )
 
             agg["segments_processed"] += 1

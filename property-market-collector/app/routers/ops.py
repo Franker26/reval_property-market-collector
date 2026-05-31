@@ -442,9 +442,14 @@ function triggerRun(svcKey, endpoint) {
 }
 
 function cancelRun(svcKey) {
-  if (!confirm('Cancelar ' + svcKey + '? El run se detendra en el proximo punto seguro.')) return;
+  var ar = _data.health ? _data.health.active_run : null;
+  var isStopping = ar && (ar.status === 'stopping');
+  var msg = isStopping
+    ? 'Forzar parada de ' + svcKey + '? El segmento actual sera abortado y quedara pendiente.'
+    : 'Detener ' + svcKey + '? El run terminara al finalizar el segmento actual.';
+  if (!confirm(msg)) return;
   api('POST', '/ops/cancel/' + svcKey, {}).then(function() {
-    toast('Cancelacion solicitada', 'info');
+    toast(isStopping ? 'Parada forzosa solicitada' : 'Parada suave solicitada', 'info');
     setTimeout(refresh, 2000);
   }).catch(function(e) { toast('Error: ' + e.message, 'error'); });
 }
@@ -585,7 +590,9 @@ function renderAll() {
   var lbt = h.last_completed_by_type || {};
   var arType    = ar ? ar.run_type : null;
   var arDur     = ar ? ar.duration_so_far_s : null;
-  var arStopping = ar ? !!ar.cancel_requested : false;
+  var arStatus = ar ? (ar.status || 'running') : '';
+  var arStopping = arStatus === 'stopping' || arStatus === 'force_stopping';
+  var arForceStopping = arStatus === 'force_stopping';
 
   // ── Helper: next run info block ──────────────────────────────────────────
   function nextRunBlock(jobIds) {
@@ -631,11 +638,12 @@ function renderAll() {
       ? '<button class="btn btn-run" onclick="triggerRun(&#39;' + svcKey + '&#39;,&#39;/discovery/segment-discovery&#39;)"'
           + (ld ? ' disabled' : '') + '>' + (ld ? 'Iniciando...' : '► Ejecutar') + '</button>'
       : nextRunBlock(schedIds);
+    var stopLabel = running ? (arForceStopping ? '■ Forzando...' : (arStopping ? '■ Forzar parada' : '■ Detener')) : '■ Detener';
     var acts = [
       modeToggle(svcKey),
       execBtn,
       '<button class="btn btn-stop" onclick="cancelRun(&#39;' + svcKey + '&#39;)"'
-        + (!running ? ' disabled' : '') + '>■ Cancelar</button>',
+        + (!running || arForceStopping ? ' disabled' : '') + '>' + stopLabel + '</button>',
     ].join('');
     var el = document.getElementById('card-' + id);
     el.className = 'svc-card' + (running ? ' running' : '');
@@ -675,11 +683,12 @@ function renderAll() {
       ? '<button class="btn btn-run" onclick="triggerRun(&#39;' + svcKey + '&#39;,&#39;/discovery/url-discovery&#39;)"'
           + (ld ? ' disabled' : '') + '>' + (ld ? 'Iniciando...' : '► Ejecutar') + '</button>'
       : nextRunBlock(schedIds);
+    var stopLabel2 = running ? (arForceStopping ? '■ Forzando...' : (arStopping ? '■ Forzar parada' : '■ Detener')) : '■ Detener';
     var acts = [
       modeToggle(svcKey),
       execBtn,
       '<button class="btn btn-stop" onclick="cancelRun(&#39;' + svcKey + '&#39;)"'
-        + (!running ? ' disabled' : '') + '>■ Cancelar</button>',
+        + (!running || arForceStopping ? ' disabled' : '') + '>' + stopLabel2 + '</button>',
     ].join('');
     var el = document.getElementById('card-' + id);
     el.className = 'svc-card' + (running ? ' running' : '');
@@ -704,11 +713,12 @@ function renderAll() {
       chip('Found', lastStats.listings_found != null ? fmtNum(lastStats.listings_found) : '—'),
     ].join('');
     var ld = _loading[svcKey];
+    var stopLabel3 = running ? (arForceStopping ? '■ Forzando...' : (arStopping ? '■ Forzar parada' : '■ Detener')) : '■ Detener';
     var acts = [
       '<button class="btn btn-run" onclick="triggerRun(&#39;' + svcKey + '&#39;,&#39;/discovery/incremental-monitor&#39;)"'
         + (ld ? ' disabled' : '') + '>' + (ld ? 'Iniciando...' : '► Ejecutar') + '</button>',
       '<button class="btn btn-stop" onclick="cancelRun(&#39;' + svcKey + '&#39;)"'
-        + (!running ? ' disabled' : '') + '>■ Cancelar</button>',
+        + (!running || arForceStopping ? ' disabled' : '') + '>' + stopLabel3 + '</button>',
     ].join('');
     var el = document.getElementById('card-' + id);
     el.className = 'svc-card' + (running ? ' running' : '');
@@ -807,13 +817,22 @@ setInterval(refresh, 30000);
 
 @router.post("/cancel/{run_type}")
 async def cancel_run(run_type: str):
-    """Solicita cancelación del run activo del tipo especificado."""
+    """Solicita parada del run activo. Primer llamado: stopping (termina segmento). Segundo: force_stop (aborta segmento)."""
     valid_types = {"segment_discovery", "url_discovery", "incremental_monitor"}
     if run_type not in valid_types:
         raise HTTPException(400, f"run_type inválido: {run_type!r}. Usar: {sorted(valid_types)}")
-    from app.services.discovery_service import request_cancel
-    request_cancel(run_type)
-    return {"status": "cancel_requested", "run_type": run_type}
+    from app.services.discovery_service import request_cancel, get_active_run_id
+    level = request_cancel(run_type)
+    new_status = "force_stopping" if level >= 2 else "stopping"
+
+    run_id = get_active_run_id(run_type)
+    if run_id:
+        factory = get_async_session_factory()
+        async with factory() as session:
+            await runs_repo.update_status(session, run_id, new_status)
+            await session.commit()
+
+    return {"status": new_status, "run_type": run_type, "stop_level": level}
 
 
 @router.get("/dashboard", response_class=HTMLResponse)
