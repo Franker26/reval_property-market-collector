@@ -42,6 +42,13 @@ class _ListingPayloadMixin:
     seller_name: Mapped[Optional[str]] = mapped_column(Text)
     seller_type: Mapped[Optional[str]] = mapped_column(Text)
 
+    generated_title: Mapped[Optional[str]] = mapped_column(Text)
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    toilettes: Mapped[Optional[int]] = mapped_column(Integer)
+    antiquity_years: Mapped[Optional[int]] = mapped_column(Integer)
+    disposition: Mapped[Optional[str]] = mapped_column(Text)
+    orientation: Mapped[Optional[str]] = mapped_column(Text)
+
     extra_data: Mapped[Optional[dict]] = mapped_column(JSONB)
 
 

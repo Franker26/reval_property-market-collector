@@ -244,7 +244,9 @@ class ZonapropAdapter:
         rooms           = _feat_int(features, "CFT1")    # Ambientes
         bedrooms        = _feat_int(features, "CFT2")    # Dormitorios
         bathrooms       = _feat_int(features, "CFT3")    # Baños
+        toilettes       = _feat_int(features, "CFT4")    # Toilettes
         garages         = _feat_int(features, "CFT7")    # Cocheras
+        antiquity_years = _feat_int(features, "CFT5")    # Antigüedad (años)
 
         # Ubicación
         loc_data = raw.get("postingLocation") or {}
@@ -278,17 +280,67 @@ class ZonapropAdapter:
         status = _STATUS_MAP.get(raw.get("status") or "", "unknown")
         source_modified_at = _parse_datetime(raw.get("modified_date"))
 
-        # extra_data: campos Zonaprop-específicos, sin imágenes ni multimedia
+        # Nuevos campos con columna propia
+        disposition = (features.get("1000019") or {}).get("value") or None
+        orientation = (features.get("1000029") or {}).get("value") or None
+        generated_title = raw.get("generatedTitle") or None
+        description = raw.get("descriptionNormalized") or None
+
+        # extra_data: todo lo demás que no tiene columna propia
         extra: dict = {}
+
+        # Visibilidad de dirección
         addr_vis = address_info.get("visibility")
         if addr_vis:
             extra["address_visibility"] = addr_vis
-        antiguedad = _feat_int(features, "CFT5")
-        if antiguedad is not None:
-            extra["antiguedad"] = antiguedad
-        orientacion = (features.get("1000029") or {}).get("value")
-        if orientacion:
-            extra["orientacion"] = orientacion
+
+        # Campos de primer nivel
+        for key, dest in (
+            ("postingCode",      "posting_code"),
+            ("reserved",         "reserved"),
+            ("premier",          "premier"),
+            ("hasVideos",        "has_videos"),
+            ("hasTour",          "has_tour"),
+            ("hasPlans",         "has_plans"),
+            ("triggerPill",      "trigger_pill"),
+            ("alphanumeric_key", "alphanumeric_key"),
+            ("whatsApp",         "whatsapp"),
+            ("publicationAreaId","publication_area_id"),
+        ):
+            val = raw.get(key)
+            if val is not None and val != "" and val != []:
+                extra[dest] = val
+
+        # lowPricePercentage (precio rebajado)
+        low_pct = price_op.get("lowPricePercentage")
+        if low_pct is not None:
+            extra["low_price_percentage"] = low_pct
+
+        # realEstateTypeId
+        ret_id = (raw.get("realEstateType") or {}).get("realEstateTypeId")
+        if ret_id:
+            extra["real_estate_type_id"] = ret_id
+
+        # Publisher extras
+        for key, dest in (
+            ("url",          "publisher_url"),
+            ("mainPhone",    "publisher_phone"),
+            ("premier",      "publisher_premier"),
+            ("created_date", "publisher_created_date"),
+        ):
+            val = pub.get(key)
+            if val is not None and val != "":
+                extra[dest] = val
+
+        # mainFeatures no mapeados a columna
+        _KNOWN_FEATURES = {"CFT1", "CFT2", "CFT3", "CFT4", "CFT5", "CFT7",
+                           "CFT100", "CFT101", "1000019", "1000029"}
+        for feat_id, feat_data in features.items():
+            if feat_id not in _KNOWN_FEATURES and feat_data:
+                val = feat_data.get("value")
+                if val is not None:
+                    label = feat_data.get("label", feat_id)
+                    extra[f"feature_{feat_id}"] = {"label": label, "value": val}
 
         return {
             "external_id":        external_id,
@@ -306,6 +358,7 @@ class ZonapropAdapter:
             "rooms":              rooms,
             "bedrooms":           bedrooms,
             "bathrooms":          bathrooms,
+            "toilettes":          toilettes,
             "garages":            garages,
             "address":            address,
             "lat":                lat,
@@ -316,5 +369,10 @@ class ZonapropAdapter:
             "seller_id":          seller_id,
             "seller_name":        seller_name,
             "seller_type":        seller_type,
+            "generated_title":    generated_title,
+            "description":        description,
+            "antiquity_years":    antiquity_years,
+            "disposition":        disposition,
+            "orientation":        orientation,
             "extra_data":         extra or None,
         }

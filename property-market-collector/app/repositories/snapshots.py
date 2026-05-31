@@ -20,6 +20,7 @@ _SNAPSHOT_PAYLOAD_KEYS = (
     "rooms", "bedrooms", "bathrooms", "garages",
     "address", "lat", "lon", "neighborhood", "city", "province_name",
     "seller_id", "seller_name", "seller_type",
+    "generated_title", "description", "toilettes", "antiquity_years", "disposition", "orientation",
     "extra_data",
 )
 
