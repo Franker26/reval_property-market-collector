@@ -18,6 +18,7 @@ class CollectionRun(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     source_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("market_sources.id"))
     run_type: Mapped[str] = mapped_column(Text, nullable=False)
+    mode: Mapped[str] = mapped_column(Text, nullable=False, default="manual")  # "manual" | "scheduled"
     status: Mapped[str] = mapped_column(Text, nullable=False, default="running")
 
     started_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
@@ -31,7 +32,6 @@ class CollectionRun(Base):
 
     source: Mapped[Optional["MarketSource"]] = relationship(back_populates="runs")
     errors: Mapped[list["CollectionError"]] = relationship(back_populates="run")
-    discovery_events: Mapped[list["DiscoveryEvent"]] = relationship(back_populates="run")
 
 
 class CollectionError(Base):

@@ -51,6 +51,7 @@ async def run_segment_discovery(
     source_code: str = "zonaprop",
     operations: Optional[list[str]] = None,
     locations: Optional[list[str]] = None,
+    mode: str = "manual",
 ) -> dict:
     """
     Construye el árbol adaptativo de segmentos precio × superficie.
@@ -79,6 +80,7 @@ async def run_segment_discovery(
             run_type="segment_discovery",
             source_id=source_id,
             params={"portal": portal, "operations": operations, "locations": locations},
+            mode=mode,
         )
         await session.commit()
         run_id = run.id
@@ -181,9 +183,10 @@ async def run_url_discovery_window(
     stop_at: datetime,
     portal: str = "zonaprop",
     source_code: str = "zonaprop",
+    mode: str = "scheduled",
 ) -> dict:
     """
-    Consume runs pendientes de url_discovery_segment_runs hasta alcanzar stop_at.
+    Consume runs pendientes de zonaprop_segment_scan_queue hasta alcanzar stop_at.
     Cada segmento se procesa completo; el chequeo de tiempo ocurre entre segmentos.
     """
     _reset_cancel("url_discovery")
@@ -216,11 +219,25 @@ async def run_url_discovery_window(
         len(pending), stop_at.strftime("%H:%M %Z"),
     )
 
+    # Crear collection_run para trazabilidad
+    async with factory() as session:
+        col_run = await runs_repo.start(
+            session,
+            run_type="url_discovery_window",
+            source_id=source_id,
+            params={"portal": portal, "pending_segments": len(pending),
+                    "stop_at": stop_at.isoformat(), "mode": mode},
+            mode=mode,
+        )
+        await session.commit()
+        col_run_id = col_run.id
+
     from app.core.alerts import dispatch
     await dispatch(
         "run_started", "warning",
         f"url_discovery_window iniciado para {portal}",
-        {"portal": portal, "pending_segments": len(pending), "stop_at": stop_at.strftime("%H:%M %Z")},
+        {"run_id": col_run_id, "portal": portal, "pending_segments": len(pending),
+         "stop_at": stop_at.strftime("%H:%M %Z"), "mode": mode},
     )
 
     stats: dict = {"processed": 0, "complete": 0, "stopped_early": 0, "failed": 0}
@@ -338,14 +355,19 @@ async def run_url_discovery_window(
 
         stats["processed"] += 1
 
+    final_status = "cancelled" if is_cancel_requested("url_discovery") else "success"
+    async with factory() as session:
+        await runs_repo.finish(session, col_run_id, status=final_status, stats=stats)
+        await session.commit()
+
     from app.core.alerts import dispatch
     await dispatch(
         "run_completed", "warning",
-        f"url_discovery_window finalizado para {portal}",
-        {"portal": portal, **stats},
+        f"url_discovery_window {final_status} para {portal}",
+        {"run_id": col_run_id, "portal": portal, "mode": mode, **stats},
     )
 
-    return {"status": "done", **stats}
+    return {"run_id": col_run_id, "status": final_status, **stats}
 
 
 # ── Fase 3: Incremental Monitor ───────────────────────────────────────────────

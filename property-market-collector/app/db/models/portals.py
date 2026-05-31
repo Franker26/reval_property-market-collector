@@ -22,4 +22,3 @@ class MarketSource(Base):
 
     listings: Mapped[list["ListingEntity"]] = relationship(back_populates="source")
     runs: Mapped[list["CollectionRun"]] = relationship(back_populates="source")
-    discovery_events: Mapped[list["DiscoveryEvent"]] = relationship(back_populates="source")

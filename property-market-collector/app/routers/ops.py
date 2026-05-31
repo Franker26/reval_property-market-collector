@@ -398,6 +398,16 @@ var _data = {};
 var _loading = {};
 var _logStates = {};
 
+// Modo por servicio: 'auto' | 'manual'. Persiste en localStorage.
+var _MODE_KEY = 'reval_svc_mode';
+function _loadModes() {
+  try { return JSON.parse(localStorage.getItem(_MODE_KEY) || '{}'); } catch(e) { return {}; }
+}
+function _saveMode(svcKey, mode) {
+  var m = _loadModes(); m[svcKey] = mode; localStorage.setItem(_MODE_KEY, JSON.stringify(m));
+}
+function getMode(svcKey) { return _loadModes()[svcKey] || 'auto'; }
+
 function saveLogState(cardId) {
   var box = document.querySelector('#card-' + cardId + ' .log-box');
   _logStates[cardId] = {
@@ -444,6 +454,34 @@ function toggleSchedule(jobId, isPaused) {
     toast(isPaused ? 'Schedule activado' : 'Schedule pausado', 'info');
     setTimeout(refresh, 600);
   }).catch(function(e) { toast('Error: ' + e.message, 'error'); });
+}
+
+// ── Mode toggle ───────────────────────────────────────────────────────────────
+function setMode(svcKey, newMode, schedJobIds) {
+  var oldMode = getMode(svcKey);
+  if (newMode === oldMode) return;
+  _saveMode(svcKey, newMode);
+
+  // Al pasar a MANUAL: pausar schedulers. Al pasar a AUTO: reanudarlos.
+  var action = newMode === 'manual' ? 'pause-job' : 'resume-job';
+  var promises = (schedJobIds || []).map(function(jid) {
+    return api('POST', '/discovery/scheduler/' + action + '/' + jid, {}).catch(function(){});
+  });
+  Promise.all(promises).then(function() {
+    toast(newMode === 'manual' ? 'Modo manual: scheduler pausado' : 'Modo auto: scheduler activado', 'info');
+    setTimeout(refresh, 600);
+  });
+}
+
+function modeToggle(svcKey, schedJobIds) {
+  var cur = getMode(svcKey);
+  var jidsJson = JSON.stringify(schedJobIds || []);
+  return '<div style="display:flex;align-items:center;gap:6px;border:1px solid #30363d;border-radius:6px;padding:3px 4px;background:#0d1117">'
+    + '<button class="btn ' + (cur === 'auto' ? 'btn-run' : 'btn-ghost') + '" style="padding:4px 10px;font-size:11px" '
+    + 'onclick="setMode(&#39;' + svcKey + '&#39;,&#39;auto&#39;,' + esc(jidsJson) + ')">AUTO</button>'
+    + '<button class="btn ' + (cur === 'manual' ? 'btn-run' : 'btn-ghost') + '" style="padding:4px 10px;font-size:11px" '
+    + 'onclick="setMode(&#39;' + svcKey + '&#39;,&#39;manual&#39;,' + esc(jidsJson) + ')">MANUAL</button>'
+    + '</div>';
 }
 
 // ── Logs ──────────────────────────────────────────────────────────────────────
@@ -539,17 +577,34 @@ function renderAll() {
   var arType = ar ? ar.run_type : null;
   var arDur  = ar ? ar.duration_so_far_s : null;
 
-  // ── Helpers: check scheduler state ──────────────────────────────────────
-  function jobPaused(jobId) {
-    for (var i = 0; i < jobs.length; i++) { if (jobs[i].id === jobId) return jobs[i].paused; }
-    return true;
+  // ── Helper: next run info block ──────────────────────────────────────────
+  function nextRunBlock(jobIds) {
+    var lines = [];
+    for (var i = 0; i < jobIds.length; i++) {
+      var jid = jobIds[i];
+      for (var k = 0; k < jobs.length; k++) {
+        if (jobs[k].id === jid) {
+          var label = jid === 'weekly_segment_discovery' ? 'Sáb'
+                    : jid === 'weekday_url_discovery'    ? 'L-V'
+                    : jid === 'sunday_url_discovery'     ? 'Dom' : jid;
+          var next = jobs[k].next_run ? fmtLocalDow(jobs[k].next_run) : 'Pausado';
+          lines.push('<span style="font-size:11px;color:#8b949e">' + label + ': ' + next + '</span>');
+          break;
+        }
+      }
+    }
+    return lines.length
+      ? '<div style="display:flex;gap:12px;align-items:center">' + lines.join('') + '</div>'
+      : '';
   }
 
   // ── Segment Discovery ────────────────────────────────────────────────────
   (function() {
     var id = 'segment-discovery';
+    var svcKey = 'segment_discovery';
+    var schedIds = ['weekly_segment_discovery'];
+    var mode = getMode(svcKey);
     var running = arType === 'segment_discovery';
-    var sdSchedActive = !jobPaused('weekly_segment_discovery');
     saveLogState(id);
     var lsd = lbt.segment_discovery || null;
     var lsdStatus = lsd ? (lsd.status || '') : '';
@@ -561,16 +616,16 @@ function renderAll() {
       chip('Estado ant.', lsdStatus || '—',
         lsdStatus === 'success' ? 'good' : lsdStatus === 'failed' ? 'bad' : 'sm'),
     ].join('');
-    var ld = _loading['segment_discovery'];
-    var runDisabled = ld || sdSchedActive;
-    var runTitle = sdSchedActive ? 'Pausá el scheduler antes de ejecutar manualmente' : '';
+    var ld = _loading[svcKey];
+    var execBtn = mode === 'manual'
+      ? '<button class="btn btn-run" onclick="triggerRun(&#39;' + svcKey + '&#39;,&#39;/discovery/segment-discovery&#39;)"'
+          + (ld ? ' disabled' : '') + '>' + (ld ? 'Iniciando...' : '► Ejecutar') + '</button>'
+      : nextRunBlock(schedIds);
     var acts = [
-      '<button class="btn btn-run" onclick="triggerRun(&#39;segment_discovery&#39;,&#39;/discovery/segment-discovery&#39;)"'
-        + (runDisabled ? ' disabled' : '') + (runTitle ? ' title="' + runTitle + '"' : '') + '>'
-        + (ld ? 'Iniciando...' : '► Ejecutar') + '</button>',
-      '<button class="btn btn-stop" onclick="cancelRun(&#39;segment_discovery&#39;)"'
+      modeToggle(svcKey, schedIds),
+      execBtn,
+      '<button class="btn btn-stop" onclick="cancelRun(&#39;' + svcKey + '&#39;)"'
         + (!running ? ' disabled' : '') + '>■ Cancelar</button>',
-      schedBtn('weekly_segment_discovery', jobs),
     ].join('');
     var el = document.getElementById('card-' + id);
     el.className = 'svc-card' + (running ? ' running' : '');
@@ -581,8 +636,10 @@ function renderAll() {
   // ── URL Discovery ────────────────────────────────────────────────────────
   (function() {
     var id = 'url-discovery';
+    var svcKey = 'url_discovery';
+    var schedIds = ['weekday_url_discovery', 'sunday_url_discovery'];
+    var mode = getMode(svcKey);
     var running = arType === 'url_discovery_window';
-    var urlSchedActive = !jobPaused('weekday_url_discovery') || !jobPaused('sunday_url_discovery');
     saveLogState(id);
     var total = sp.total || 0, complete = sp.complete || 0;
     var pct = total > 0 ? Math.round(complete / total * 100) : 0;
@@ -603,17 +660,16 @@ function renderAll() {
       chip('Latencia', fmtMs(perf.avg_latency_ms)),
       chip('Ultimo', lud ? fmtAgo(lud.finished_at) : '—'),
     ].join('');
-    var ld = _loading['url_discovery'];
-    var runDisabled = ld || urlSchedActive;
-    var runTitle = urlSchedActive ? 'Pausá ambos schedulers antes de ejecutar manualmente' : '';
+    var ld = _loading[svcKey];
+    var execBtn = mode === 'manual'
+      ? '<button class="btn btn-run" onclick="triggerRun(&#39;' + svcKey + '&#39;,&#39;/discovery/url-discovery&#39;)"'
+          + (ld ? ' disabled' : '') + '>' + (ld ? 'Iniciando...' : '► Ejecutar') + '</button>'
+      : nextRunBlock(schedIds);
     var acts = [
-      '<button class="btn btn-run" onclick="triggerRun(&#39;url_discovery&#39;,&#39;/discovery/url-discovery&#39;)"'
-        + (runDisabled ? ' disabled' : '') + (runTitle ? ' title="' + runTitle + '"' : '') + '>'
-        + (ld ? 'Iniciando...' : '► Ejecutar') + '</button>',
-      '<button class="btn btn-stop" onclick="cancelRun(&#39;url_discovery&#39;)"'
+      modeToggle(svcKey, schedIds),
+      execBtn,
+      '<button class="btn btn-stop" onclick="cancelRun(&#39;' + svcKey + '&#39;)"'
         + (!running ? ' disabled' : '') + '>■ Cancelar</button>',
-      schedBtn('weekday_url_discovery', jobs),
-      schedBtn('sunday_url_discovery', jobs),
     ].join('');
     var el = document.getElementById('card-' + id);
     el.className = 'svc-card' + (running ? ' running' : '');
@@ -624,6 +680,7 @@ function renderAll() {
   // ── Incremental Monitor ──────────────────────────────────────────────────
   (function() {
     var id = 'incremental-monitor';
+    var svcKey = 'incremental_monitor';
     var running = arType === 'incremental_monitor';
     saveLogState(id);
     var last = lbt.incremental_monitor || null;
@@ -636,11 +693,11 @@ function renderAll() {
       chip('Duracion ant.', last ? fmtDur(last.duration_seconds) : '—'),
       chip('Found', lastStats.listings_found != null ? fmtNum(lastStats.listings_found) : '—'),
     ].join('');
-    var ld = _loading['incremental_monitor'];
+    var ld = _loading[svcKey];
     var acts = [
-      '<button class="btn btn-run" onclick="triggerRun(&#39;incremental_monitor&#39;,&#39;/discovery/incremental-monitor&#39;)"'
+      '<button class="btn btn-run" onclick="triggerRun(&#39;' + svcKey + '&#39;,&#39;/discovery/incremental-monitor&#39;)"'
         + (ld ? ' disabled' : '') + '>' + (ld ? 'Iniciando...' : '► Ejecutar') + '</button>',
-      '<button class="btn btn-stop" onclick="cancelRun(&#39;incremental_monitor&#39;)"'
+      '<button class="btn btn-stop" onclick="cancelRun(&#39;' + svcKey + '&#39;)"'
         + (!running ? ' disabled' : '') + '>■ Cancelar</button>',
     ].join('');
     var el = document.getElementById('card-' + id);

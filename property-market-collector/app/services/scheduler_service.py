@@ -28,7 +28,7 @@ async def _job_segment_discovery() -> None:
     log.info("scheduler: iniciando segment_discovery")
     try:
         from app.services.discovery_service import run_segment_discovery
-        result = await run_segment_discovery()
+        result = await run_segment_discovery(mode="scheduled")
         log.info("scheduler: segment_discovery finalizado — %s", result)
     except Exception as exc:
         log.error("scheduler: error en segment_discovery — %s", exc)
@@ -64,7 +64,7 @@ async def _run_url_discovery_window(
 
     try:
         from app.services.discovery_service import run_url_discovery_window
-        result = await run_url_discovery_window(stop_at=stop_at)
+        result = await run_url_discovery_window(stop_at=stop_at, mode="scheduled")
         log.info("scheduler: url_discovery finalizado — %s", result)
     except Exception as exc:
         log.error("scheduler: error en url_discovery — %s", exc)

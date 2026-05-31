@@ -15,10 +15,12 @@ async def start(
     run_type: str,
     source_id: Optional[int] = None,
     params: Optional[dict] = None,
+    mode: str = "manual",
 ) -> CollectionRun:
     run = CollectionRun(
         source_id=source_id,
         run_type=run_type,
+        mode=mode,
         status="running",
         params_json=params,
     )
