@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any
+from decimal import Decimal
+
 
 # Campos que determinan si el estado de un listing cambió.
 # Cambios en estos campos → nuevo snapshot + last_changed_at.
@@ -23,11 +24,20 @@ _HASH_KEYS = (
 )
 
 
+def _normalize(v: object) -> object:
+    """Convierte Decimal a int/float para que la serialización JSON sea idéntica
+    sin importar si el dato viene de la API (int) o de una entidad SQLAlchemy (Decimal)."""
+    if isinstance(v, Decimal):
+        return int(v) if v == v.to_integral_value() else float(v)
+    return v
+
+
 def compute_listing_hash(data: dict) -> str:
     """
     SHA256 de los campos que determinan el estado de un listing.
-    Serialización canónica (sorted keys) para consistencia.
+    Serialización canónica (sorted keys) para consistencia entre fuentes
+    (respuesta de API vs entidad ORM).
     """
-    subset = {k: data.get(k) for k in _HASH_KEYS}
+    subset = {k: _normalize(data.get(k)) for k in _HASH_KEYS}
     serialized = json.dumps(subset, sort_keys=True, ensure_ascii=False, default=str)
     return hashlib.sha256(serialized.encode()).hexdigest()

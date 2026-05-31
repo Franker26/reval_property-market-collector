@@ -26,7 +26,7 @@ _STATUS_MAP = {"ONLINE": "active", "OFFLINE": "offline", "PAUSED": "paused", "RE
 
 # Publicaciones agrupadores de emprendimientos: no son unidades comprables directamente.
 # Aparecen en múltiples segmentos con precios inconsistentes (la API convierte por contexto).
-_EXCLUDED_REAL_ESTATE_TYPE_IDS = frozenset({33, 34})  # desarrollos horizontales, verticales
+_EXCLUDED_REAL_ESTATE_TYPE_IDS = frozenset({"33", "34"})  # desarrollos horizontales, verticales
 
 
 def _feat_int(features: dict, feature_id: str) -> Optional[int]:
