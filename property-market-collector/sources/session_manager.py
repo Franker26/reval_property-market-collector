@@ -11,6 +11,7 @@ Sin Playwright, sin warmup, sin cf_clearance necesario.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any, Optional
@@ -49,6 +50,8 @@ class ZonapropSession:
         self._session = session
         self.cf_clearance = True  # curl_cffi bypasa el check — siempre OK
 
+    _REQUEST_TIMEOUT = 30  # segundos — aplica a toda la request, no solo al connect
+
     async def post_json(
         self,
         url: str,
@@ -59,17 +62,23 @@ class ZonapropSession:
         if extra_headers:
             headers.update(extra_headers)
         try:
-            resp = await self._session.post(
-                url,
-                data=json.dumps(payload),
-                headers=headers,
-                impersonate=_IMPERSONATE,
-                timeout=30,
+            resp = await asyncio.wait_for(
+                self._session.post(
+                    url,
+                    data=json.dumps(payload),
+                    headers=headers,
+                    impersonate=_IMPERSONATE,
+                    timeout=30,
+                ),
+                timeout=self._REQUEST_TIMEOUT,
             )
             if resp.status_code == 200:
                 return resp.json()
             log.warning("session.post_json: HTTP %d → %s", resp.status_code, url)
             return {"__http_error__": resp.status_code}
+        except asyncio.TimeoutError:
+            log.error("session.post_json: timeout (%ds) — %s", self._REQUEST_TIMEOUT, url)
+            return None
         except Exception as exc:
             log.error("session.post_json: error en %s — %s", url, exc)
             return None
