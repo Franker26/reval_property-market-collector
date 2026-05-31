@@ -176,19 +176,35 @@ async def run_segment_discovery(
         async with session.begin():
             new_runs = await seg_repo.sync_pending_scan_queue(session, portal)
 
+    async with factory() as session:
+        async with session.begin():
+            invalidated = await seg_repo.invalidate_changed_segments_after_discovery(session, portal)
+
+    log.info(
+        "discovery_service: invalidación post-discovery — evaluados=%d invalidados=%d high=%d normal=%d",
+        invalidated["evaluated"], invalidated["invalidated"],
+        invalidated["high"], invalidated["normal"],
+    )
+
     from app.core.alerts import dispatch
     await dispatch(
         "run_completed" if final_status == "success" else "run_failed",
         "warning" if final_status == "success" else "critical",
         f"segment_discovery {final_status} para {portal}",
-        {"run_id": run_id, "portal": portal, "leaves": leaf_count, "oversized": oversized_count, "new_runs": new_runs},
+        {
+            "run_id": run_id, "portal": portal,
+            "leaves": leaf_count, "oversized": oversized_count,
+            "new_runs": new_runs,
+            "invalidated": invalidated["invalidated"],
+            "invalidated_high": invalidated["high"],
+        },
     )
 
     log.info(
-        "discovery_service: segment_discovery run_id=%d status=%s leaves=%d oversized=%d new_runs=%d",
-        run_id, final_status, leaf_count, oversized_count, new_runs,
+        "discovery_service: segment_discovery run_id=%d status=%s leaves=%d oversized=%d new_runs=%d invalidated=%d",
+        run_id, final_status, leaf_count, oversized_count, new_runs, invalidated["invalidated"],
     )
-    return {"run_id": run_id, "status": final_status, **stats, "new_runs": new_runs}
+    return {"run_id": run_id, "status": final_status, **stats, "new_runs": new_runs, "invalidated": invalidated}
 
 
 # ── Fase 2a: URL Discovery con ventana horaria y resumabilidad ────────────────

@@ -39,6 +39,8 @@ class ZonapropSegmentScanQueue(Base):
 
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_error: Mapped[Optional[str]] = mapped_column(Text)
+    reason: Mapped[Optional[str]] = mapped_column(Text)
+    priority: Mapped[Optional[str]] = mapped_column(Text)
 
     started_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
     completed_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))

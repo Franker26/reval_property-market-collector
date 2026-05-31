@@ -11,6 +11,10 @@ from sqlalchemy.sql import func
 
 from app.db.models import ZonapropSegment, ZonapropSegmentSnapshot, ZonapropSegmentScanQueue
 
+import logging
+
+log = logging.getLogger(__name__)
+
 
 async def upsert_segment(
     session: AsyncSession,
@@ -156,3 +160,123 @@ async def deactivate_portal_segments(session: AsyncSession, portal: str) -> int:
         .values(status="inactive")
     )
     return result.rowcount  # type: ignore[return-value]
+
+
+async def invalidate_changed_segments_after_discovery(
+    session: AsyncSession,
+    portal: str,
+    delta_abs_normal: int = 30,
+    delta_abs_high: int = 100,
+    delta_pct_normal: float = 2.0,
+    delta_pct_high: float = 10.0,
+) -> dict:
+    """
+    Compara los dos últimos snapshots de cada segmento activo y marca como pending
+    las entradas 'complete' en queue cuyo total_count cambió significativamente.
+    Solo evalúa segmentos con al menos 2 snapshots. No toca pending, running ni failed.
+    """
+    rn = func.row_number().over(
+        partition_by=ZonapropSegmentSnapshot.segment_id,
+        order_by=ZonapropSegmentSnapshot.captured_at.desc(),
+    ).label("rn")
+
+    ranked_subq = (
+        select(ZonapropSegmentSnapshot.segment_id, ZonapropSegmentSnapshot.total_count, rn)
+        .join(ZonapropSegment, ZonapropSegment.id == ZonapropSegmentSnapshot.segment_id)
+        .where(
+            ZonapropSegment.portal == portal,
+            ZonapropSegment.status == "active",
+            ZonapropSegment.is_leaf == True,  # noqa: E712
+        )
+        .subquery("ranked")
+    )
+
+    latest_subq = (
+        select(ranked_subq.c.segment_id, ranked_subq.c.total_count.label("total_count"))
+        .where(ranked_subq.c.rn == 1)
+        .subquery("latest")
+    )
+
+    prev_subq = (
+        select(ranked_subq.c.segment_id, ranked_subq.c.total_count.label("total_count"))
+        .where(ranked_subq.c.rn == 2)
+        .subquery("prev")
+    )
+
+    stmt = (
+        select(
+            latest_subq.c.segment_id,
+            latest_subq.c.total_count.label("current_count"),
+            prev_subq.c.total_count.label("prev_count"),
+            ZonapropSegmentScanQueue.id.label("queue_id"),
+        )
+        .join(prev_subq, prev_subq.c.segment_id == latest_subq.c.segment_id)
+        .join(
+            ZonapropSegmentScanQueue,
+            ZonapropSegmentScanQueue.segment_id == latest_subq.c.segment_id,
+        )
+        .where(ZonapropSegmentScanQueue.status == "complete")
+    )
+
+    rows = (await session.execute(stmt)).all()
+
+    to_invalidate = []
+    for row in rows:
+        current_count = row.current_count or 0
+        prev_count = row.prev_count or 0
+        delta_abs = current_count - prev_count
+
+        if prev_count == 0:
+            delta_pct = 100.0 if current_count > 0 else 0.0
+        else:
+            delta_pct = abs(delta_abs) / prev_count * 100
+
+        if abs(delta_abs) >= delta_abs_normal or delta_pct >= delta_pct_normal:
+            priority = (
+                "high"
+                if abs(delta_abs) >= delta_abs_high or delta_pct >= delta_pct_high
+                else "normal"
+            )
+            to_invalidate.append({
+                "queue_id": row.queue_id,
+                "segment_id": row.segment_id,
+                "current_count": current_count,
+                "prev_count": prev_count,
+                "delta_abs": delta_abs,
+                "delta_pct": delta_pct,
+                "priority": priority,
+            })
+
+    now = datetime.now(timezone.utc)
+    for item in to_invalidate:
+        reason = (
+            f"count_delta: prev={item['prev_count']} current={item['current_count']}"
+            f" delta={item['delta_abs']:+d} pct={item['delta_pct']:.1f}%"
+        )
+        await session.execute(
+            update(ZonapropSegmentScanQueue)
+            .where(ZonapropSegmentScanQueue.id == item["queue_id"])
+            .values(status="pending", reason=reason, priority=item["priority"], updated_at=now)
+        )
+
+    top10 = sorted(to_invalidate, key=lambda x: abs(x["delta_abs"]), reverse=True)[:10]
+
+    log.info(
+        "invalidate_changed_segments: evaluados=%d invalidados=%d high=%d normal=%d",
+        len(rows), len(to_invalidate),
+        sum(1 for x in to_invalidate if x["priority"] == "high"),
+        sum(1 for x in to_invalidate if x["priority"] == "normal"),
+    )
+    for item in top10:
+        log.info(
+            "  seg_id=%-8d delta_abs=%-6+d pct=%.1f%%  priority=%s",
+            item["segment_id"], item["delta_abs"], item["delta_pct"], item["priority"],
+        )
+
+    return {
+        "evaluated": len(rows),
+        "invalidated": len(to_invalidate),
+        "high": sum(1 for x in to_invalidate if x["priority"] == "high"),
+        "normal": sum(1 for x in to_invalidate if x["priority"] == "normal"),
+        "top10": top10,
+    }
