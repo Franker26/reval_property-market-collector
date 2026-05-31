@@ -64,7 +64,7 @@ async def _bg_url_discovery_manual() -> None:
     try:
         from app.services.discovery_service import run_url_discovery_window
         stop_at = datetime.now(timezone.utc) + timedelta(hours=24)
-        result = await run_url_discovery_window(stop_at=stop_at)
+        result = await run_url_discovery_window(stop_at=stop_at, mode="manual")
         log.info("bg url_discovery manual finalizado: %s", result)
     except Exception as exc:
         log.error("bg url_discovery manual error: %s", exc)

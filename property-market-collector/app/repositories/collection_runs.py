@@ -52,6 +52,16 @@ async def finish(
     )
 
 
+async def reset_stale_running_runs(session: AsyncSession) -> int:
+    """Marca como 'failed' los collection_runs que quedaron en 'running' al reiniciar."""
+    result = await session.execute(
+        update(CollectionRun)
+        .where(CollectionRun.status == "running")
+        .values(status="failed", finished_at=datetime.utcnow())
+    )
+    return result.rowcount  # type: ignore[return-value]
+
+
 async def get_by_id(session: AsyncSession, run_id: int) -> Optional[CollectionRun]:
     return await session.get(CollectionRun, run_id)
 

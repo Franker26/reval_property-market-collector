@@ -58,6 +58,21 @@ async def lifespan(app: FastAPI):
             async with factory() as session:
                 await seed_sources(session)
 
+            # Resetear segmentos que quedaron en 'running' si el container
+            # fue reiniciado a mitad de una ejecución.
+            from app.repositories.zonaprop import scan_queue as _sq_repo
+            async with factory() as session:
+                async with session.begin():
+                    reset_count = await _sq_repo.reset_all_running(session)
+            if reset_count > 0:
+                log.warning("startup: %d segmentos en 'running' reseteados a 'pending'", reset_count)
+
+            # Marcar collection_runs que quedaron en 'running' como 'failed'
+            from app.repositories import collection_runs as _runs_repo
+            async with factory() as session:
+                async with session.begin():
+                    await _runs_repo.reset_stale_running_runs(session)
+
             start_scheduler()
 
             from app.core.alerts import setup_alert_dispatcher, dispatch

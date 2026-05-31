@@ -28,6 +28,16 @@ async def reset_stale_running(session: AsyncSession) -> int:
     return result.rowcount  # type: ignore[return-value]
 
 
+async def reset_all_running(session: AsyncSession) -> int:
+    """Resetea TODOS los segmentos en 'running' a 'pending'. Llamar solo al arrancar."""
+    result = await session.execute(
+        update(ZonapropSegmentScanQueue)
+        .where(ZonapropSegmentScanQueue.status == "running")
+        .values(status="pending", locked_at=None, updated_at=datetime.now(timezone.utc))
+    )
+    return result.rowcount  # type: ignore[return-value]
+
+
 async def get_pending(session: AsyncSession, portal: str) -> list[ZonapropSegmentScanQueue]:
     """Retorna entradas pendientes para segmentos activos del portal, con segment cargado."""
     stmt = (
