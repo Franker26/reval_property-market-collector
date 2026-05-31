@@ -456,15 +456,20 @@ function toggleSchedule(jobId, isPaused) {
   }).catch(function(e) { toast('Error: ' + e.message, 'error'); });
 }
 
-// ── Mode toggle ───────────────────────────────────────────────────────────────
-function setMode(svcKey, newMode, schedJobIds) {
-  var oldMode = getMode(svcKey);
-  if (newMode === oldMode) return;
-  _saveMode(svcKey, newMode);
+// Mapa de service key → job IDs del scheduler (evita pasar arrays en onclick)
+var _SCHED_JOBS = {
+  'segment_discovery': ['weekly_segment_discovery'],
+  'url_discovery':     ['weekday_url_discovery', 'sunday_url_discovery'],
+  'incremental_monitor': [],
+};
 
-  // Al pasar a MANUAL: pausar schedulers. Al pasar a AUTO: reanudarlos.
+// ── Mode toggle ───────────────────────────────────────────────────────────────
+function setMode(svcKey, newMode) {
+  if (newMode === getMode(svcKey)) return;
+  _saveMode(svcKey, newMode);
   var action = newMode === 'manual' ? 'pause-job' : 'resume-job';
-  var promises = (schedJobIds || []).map(function(jid) {
+  var jobs = _SCHED_JOBS[svcKey] || [];
+  var promises = jobs.map(function(jid) {
     return api('POST', '/discovery/scheduler/' + action + '/' + jid, {}).catch(function(){});
   });
   Promise.all(promises).then(function() {
@@ -473,14 +478,13 @@ function setMode(svcKey, newMode, schedJobIds) {
   });
 }
 
-function modeToggle(svcKey, schedJobIds) {
+function modeToggle(svcKey) {
   var cur = getMode(svcKey);
-  var jidsJson = JSON.stringify(schedJobIds || []);
   return '<div style="display:flex;align-items:center;gap:6px;border:1px solid #30363d;border-radius:6px;padding:3px 4px;background:#0d1117">'
     + '<button class="btn ' + (cur === 'auto' ? 'btn-run' : 'btn-ghost') + '" style="padding:4px 10px;font-size:11px" '
-    + 'onclick="setMode(&#39;' + svcKey + '&#39;,&#39;auto&#39;,' + esc(jidsJson) + ')">AUTO</button>'
+    + 'onclick="setMode(&#39;' + svcKey + '&#39;,&#39;auto&#39;)">AUTO</button>'
     + '<button class="btn ' + (cur === 'manual' ? 'btn-run' : 'btn-ghost') + '" style="padding:4px 10px;font-size:11px" '
-    + 'onclick="setMode(&#39;' + svcKey + '&#39;,&#39;manual&#39;,' + esc(jidsJson) + ')">MANUAL</button>'
+    + 'onclick="setMode(&#39;' + svcKey + '&#39;,&#39;manual&#39;)">MANUAL</button>'
     + '</div>';
 }
 
@@ -622,7 +626,7 @@ function renderAll() {
           + (ld ? ' disabled' : '') + '>' + (ld ? 'Iniciando...' : '► Ejecutar') + '</button>'
       : nextRunBlock(schedIds);
     var acts = [
-      modeToggle(svcKey, schedIds),
+      modeToggle(svcKey),
       execBtn,
       '<button class="btn btn-stop" onclick="cancelRun(&#39;' + svcKey + '&#39;)"'
         + (!running ? ' disabled' : '') + '>■ Cancelar</button>',
@@ -666,7 +670,7 @@ function renderAll() {
           + (ld ? ' disabled' : '') + '>' + (ld ? 'Iniciando...' : '► Ejecutar') + '</button>'
       : nextRunBlock(schedIds);
     var acts = [
-      modeToggle(svcKey, schedIds),
+      modeToggle(svcKey),
       execBtn,
       '<button class="btn btn-stop" onclick="cancelRun(&#39;' + svcKey + '&#39;)"'
         + (!running ? ' disabled' : '') + '>■ Cancelar</button>',
