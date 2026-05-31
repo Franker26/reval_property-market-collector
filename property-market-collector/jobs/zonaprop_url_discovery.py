@@ -139,12 +139,8 @@ async def _run(args: argparse.Namespace) -> int:
                         source_id=source_id,
                         postings=postings,
                     )
-                    for entity, changed in results:
-                        if changed:
-                            if entity.first_seen_at == entity.last_seen_at:
-                                total_new += 1
-                            else:
-                                total_changed += 1
+                    for entity, is_new, needs_snapshot in results:
+                        if needs_snapshot:
                             await snap_repo.create_from_posting(
                                 session=session,
                                 listing_id=entity.id,
@@ -154,6 +150,10 @@ async def _run(args: argparse.Namespace) -> int:
                                 ),
                                 content_hash=entity.content_hash,
                             )
+                        if is_new:
+                            total_new += 1
+                        elif needs_snapshot:
+                            total_changed += 1
                         else:
                             total_touched += 1
 

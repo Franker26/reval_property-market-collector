@@ -28,16 +28,14 @@ async def upsert_batch(
     session: AsyncSession,
     source_id: int,
     postings: list[dict],
-) -> list[tuple[ListingEntity, bool]]:
+) -> list[tuple[ListingEntity, bool, bool]]:
     """
     Procesa un lote de postings del discovery API.
 
     Implementa tres casos:
-      A — nuevo listing: INSERT con todos los campos + snapshot requerido
-      B — existente sin cambios: UPDATE last_seen_at solamente
-      C — existente con cambios: UPDATE todos los campos de payload + snapshot requerido
-
-    Devuelve lista de (entity, changed) donde changed=True implica crear snapshot.
+      A — nuevo listing:         INSERT completo       → (entity, is_new=True,  needs_snapshot=True)
+      B — existente sin cambios: UPDATE last_seen_at   → (entity, is_new=False, needs_snapshot=False)
+      C — existente con cambios: UPDATE payload        → (entity, is_new=False, needs_snapshot=True)
     """
     if not postings:
         return []
@@ -46,7 +44,7 @@ async def upsert_batch(
     existing_map = await _get_many(session, source_id, external_ids)
 
     now = datetime.utcnow()
-    results: list[tuple[ListingEntity, bool]] = []
+    results: list[tuple[ListingEntity, bool, bool]] = []
 
     for posting in postings:
         new_hash = compute_listing_hash(posting)
@@ -64,12 +62,12 @@ async def upsert_batch(
                 **{k: posting.get(k) for k in _PAYLOAD_KEYS},
             )
             session.add(entity)
-            results.append((entity, True))
+            results.append((entity, True, True))
 
         elif existing.content_hash == new_hash:
             # CASO B: sin cambios — solo tocar last_seen_at
             existing.last_seen_at = now
-            results.append((existing, False))
+            results.append((existing, False, False))
 
         else:
             # CASO C: algo cambió — actualizar payload completo
@@ -78,7 +76,7 @@ async def upsert_batch(
             existing.content_hash = new_hash
             existing.last_seen_at = now
             existing.last_changed_at = now
-            results.append((existing, True))
+            results.append((existing, False, True))
 
     await session.flush()
     return results

@@ -17,7 +17,8 @@ _HASH_KEYS = (
     "bathrooms",
     "garages",
     "status",
-    "source_modified_at",
+    # source_modified_at excluido: Zonaprop lo actualiza en refreshes del vendedor,
+    # no refleja cambios en los datos estructurados que importan para market intelligence.
     "seller_id",
 )
 

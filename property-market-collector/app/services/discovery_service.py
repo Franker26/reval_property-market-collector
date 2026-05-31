@@ -273,11 +273,12 @@ async def run_url_discovery_window(
                 await run_repo.mark_started(session, run.id)
 
         total_found = 0
+        new_count = 0
         changed_count = 0
         segment_id = run.segment_id
 
         async def persist(postings: list[dict], page_num: int) -> None:
-            nonlocal total_found, changed_count
+            nonlocal total_found, new_count, changed_count
             from app.repositories import snapshots as snap_repo
             async with factory() as sess:
                 async with sess.begin():
@@ -286,8 +287,8 @@ async def run_url_discovery_window(
                         source_id=source_id,
                         postings=postings,
                     )
-                    for entity, changed in results:
-                        if changed:
+                    for entity, is_new, needs_snapshot in results:
+                        if needs_snapshot:
                             posting = next(p for p in postings if p["external_id"] == entity.external_id)
                             await snap_repo.create_from_posting(
                                 session=sess,
@@ -295,6 +296,9 @@ async def run_url_discovery_window(
                                 posting=posting,
                                 content_hash=entity.content_hash,
                             )
+                        if is_new:
+                            new_count += 1
+                        elif needs_snapshot:
                             changed_count += 1
                     total_found += len(postings)
 
@@ -359,7 +363,7 @@ async def run_url_discovery_window(
                             session, run.id,
                             pages_scanned=pages_ok,
                             listings_found=total_found,
-                            new_count=total_found - changed_count,
+                            new_count=new_count,
                             changed_count=changed_count,
                             **seg_metrics,
                         )
@@ -444,8 +448,8 @@ async def run_incremental_monitor(
                     source_id=source_id,
                     postings=postings,
                 )
-                for entity, changed in results:
-                    if changed:
+                for entity, is_new, needs_snapshot in results:
+                    if needs_snapshot:
                         posting = next(p for p in postings if p["external_id"] == entity.external_id)
                         await snap_repo.create_from_posting(
                             session=session,

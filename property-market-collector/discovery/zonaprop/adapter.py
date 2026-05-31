@@ -24,6 +24,10 @@ log = logging.getLogger(__name__)
 _SELLER_TYPE = {"1": "particular", "2": "inmobiliaria", "3": "developer"}
 _STATUS_MAP = {"ONLINE": "active", "OFFLINE": "offline", "PAUSED": "paused", "RESERVED": "reserved"}
 
+# Publicaciones agrupadores de emprendimientos: no son unidades comprables directamente.
+# Aparecen en múltiples segmentos con precios inconsistentes (la API convierte por contexto).
+_EXCLUDED_REAL_ESTATE_TYPE_IDS = frozenset({33, 34})  # desarrollos horizontales, verticales
+
 
 def _feat_int(features: dict, feature_id: str) -> Optional[int]:
     """Extrae el valor entero de una feature por ID (CFT100, CFT1, etc.)."""
@@ -196,6 +200,9 @@ class ZonapropAdapter:
         """
         external_id = str(raw.get("postingId") or raw.get("id") or "").strip()
         if not external_id:
+            return None
+
+        if (raw.get("realEstateType") or {}).get("realEstateTypeId") in _EXCLUDED_REAL_ESTATE_TYPE_IDS:
             return None
 
         # URL canónica

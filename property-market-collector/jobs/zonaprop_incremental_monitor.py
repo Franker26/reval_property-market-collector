@@ -126,8 +126,8 @@ async def _run(args: argparse.Namespace) -> int:
                         source_id=source_id,
                         postings=postings,
                     )
-                    for entity, changed in results:
-                        if changed:
+                    for entity, is_new, needs_snapshot in results:
+                        if needs_snapshot:
                             posting = next(p for p in postings if p["external_id"] == entity.external_id)
                             await snap_repo.create_from_posting(
                                 session=sess,
