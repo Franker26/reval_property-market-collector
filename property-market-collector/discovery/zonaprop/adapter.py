@@ -239,8 +239,9 @@ class ZonapropAdapter:
 
         # Features: mainFeatures es un dict {featureId: {value, label, ...}}
         features = raw.get("mainFeatures") or {}
-        surface_total   = _feat_int(features, "CFT100")  # Superficie total m²
-        surface_covered = _feat_int(features, "CFT101")  # Superficie cubierta m²
+        surface_total   = _feat_int(features, "CFT100")  # Superficie total
+        surface_covered = _feat_int(features, "CFT101")  # Superficie cubierta
+        surface_unit    = (features.get("CFT100") or {}).get("measure") or None  # e.g. "m²"
         rooms           = _feat_int(features, "CFT1")    # Ambientes
         bedrooms        = _feat_int(features, "CFT2")    # Dormitorios
         bathrooms       = _feat_int(features, "CFT3")    # Baños
@@ -355,6 +356,7 @@ class ZonapropAdapter:
             "expenses_currency":  expenses_currency,
             "surface_total":      surface_total,
             "surface_covered":    surface_covered,
+            "surface_unit":       surface_unit,
             "rooms":              rooms,
             "bedrooms":           bedrooms,
             "bathrooms":          bathrooms,

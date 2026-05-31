@@ -15,11 +15,12 @@ _PAYLOAD_KEYS = (
     "canonical_url", "operation_type", "property_type",
     "status", "source_modified_at",
     "price_amount", "price_currency", "expenses_amount", "expenses_currency",
-    "surface_total", "surface_covered",
-    "rooms", "bedrooms", "bathrooms", "garages",
-    "address", "lat", "lon", "neighborhood", "city", "province_name",
+    "surface_total", "surface_covered", "surface_unit",
+    "rooms", "bedrooms", "bathrooms", "toilettes", "garages",
+    "antiquity_years", "disposition", "orientation",
+    "address", "neighborhood", "city", "province_name", "lat", "lon",
     "seller_id", "seller_name", "seller_type",
-    "generated_title", "description", "toilettes", "antiquity_years", "disposition", "orientation",
+    "generated_title", "description",
     "extra_data",
 )
 
