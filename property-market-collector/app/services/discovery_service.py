@@ -385,6 +385,14 @@ async def run_url_discovery(
             session, portal=portal, operation_key=operation_key, province_key=location_key
         )
 
+    from app.core.alerts import dispatch
+    await dispatch(
+        "run_started", "warning",
+        f"url_discovery iniciado para {portal}",
+        {"run_id": run_id, "portal": portal, "segments": len(segments),
+         "operation_key": operation_key, "location_key": location_key},
+    )
+
     total_written = 0
     run_error_count = 0
 
@@ -465,6 +473,15 @@ async def run_url_discovery(
     async with factory() as session:
         await runs_repo.finish(session, run_id, status=final_status, stats=stats)
         await session.commit()
+
+    from app.core.alerts import dispatch
+    await dispatch(
+        "run_completed" if final_status in ("success", "partial") else "run_failed",
+        "warning" if final_status in ("success", "partial", "cancelled") else "critical",
+        f"url_discovery {final_status} para {portal}",
+        {"run_id": run_id, "portal": portal, "found": agg["total_found"],
+         "written": total_written, "segments": agg.get("segments_processed", 0)},
+    )
 
     log.info(
         "discovery_service: url_discovery run_id=%d status=%s found=%d written=%d",
