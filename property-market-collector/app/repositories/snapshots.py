@@ -14,14 +14,14 @@ if TYPE_CHECKING:
 
 # Campos de payload copiados del posting/entity al snapshot
 _SNAPSHOT_PAYLOAD_KEYS = (
-    "status", "source_modified_at",
+    "canonical_url", "status", "source_modified_at",
+    "operation_type", "property_type", "generated_title", "description",
     "price_amount", "price_currency", "expenses_amount", "expenses_currency",
     "surface_total", "surface_covered", "surface_unit",
     "rooms", "bedrooms", "bathrooms", "toilettes", "garages",
     "antiquity_years", "disposition", "orientation",
     "address", "neighborhood", "city", "province_name", "lat", "lon",
     "seller_id", "seller_name", "seller_type",
-    "generated_title", "description",
     "extra_data",
 )
 

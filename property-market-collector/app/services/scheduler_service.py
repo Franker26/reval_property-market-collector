@@ -1,5 +1,5 @@
 """
-Scheduler: segment_discovery semanal + url_discovery L-V con ventana horaria.
+Scheduler: segment_discovery semanal + url_discovery L-V y domingo con ventana horaria.
 """
 from __future__ import annotations
 
@@ -34,19 +34,32 @@ async def _job_segment_discovery() -> None:
         log.error("scheduler: error en segment_discovery — %s", exc)
 
 
-async def _job_url_discovery() -> None:
+async def _run_url_discovery_window(
+    delay_max_secs: int,
+    stop_hour: int,
+    stop_minute_base: int,
+    stop_minute_jitter: int = 30,
+) -> None:
+    """
+    Lógica compartida de url_discovery con ventana horaria configurable.
+
+    delay_max_secs    — máximo de segundos de espera antes de arrancar
+    stop_hour         — hora de corte (AR)
+    stop_minute_base  — minuto base de corte
+    stop_minute_jitter— variación aleatoria en minutos sobre stop_minute_base
+    """
     from zoneinfo import ZoneInfo
     settings = get_settings()
     ar_tz = ZoneInfo(settings.collector_timezone)
 
-    delay_secs = random.uniform(0, 3600)
+    delay_secs = random.uniform(0, delay_max_secs)
     log.info("scheduler: url_discovery arranca en %.0f segundos", delay_secs)
     await asyncio.sleep(delay_secs)
 
     now = datetime.now(ar_tz)
-    stop_at = now.replace(hour=18, minute=30, second=0, microsecond=0) + timedelta(
-        minutes=random.randint(0, 30)
-    )
+    stop_at = now.replace(
+        hour=stop_hour, minute=stop_minute_base, second=0, microsecond=0
+    ) + timedelta(minutes=random.randint(0, stop_minute_jitter))
     log.info("scheduler: url_discovery iniciando — stop_at=%s", stop_at.strftime("%H:%M %Z"))
 
     try:
@@ -55,6 +68,26 @@ async def _job_url_discovery() -> None:
         log.info("scheduler: url_discovery finalizado — %s", result)
     except Exception as exc:
         log.error("scheduler: error en url_discovery — %s", exc)
+
+
+async def _job_url_discovery_weekday() -> None:
+    """L-V: arranca entre 06:00 y 07:00 AR, corta entre 18:30 y 19:00 AR."""
+    await _run_url_discovery_window(
+        delay_max_secs=3600,
+        stop_hour=18,
+        stop_minute_base=30,
+        stop_minute_jitter=30,
+    )
+
+
+async def _job_url_discovery_sunday() -> None:
+    """Domingo: arranca entre 10:00 y 10:30 AR, corta entre 16:00 y 16:30 AR."""
+    await _run_url_discovery_window(
+        delay_max_secs=1800,
+        stop_hour=16,
+        stop_minute_base=0,
+        stop_minute_jitter=30,
+    )
 
 
 def get_scheduler() -> AsyncIOScheduler:
@@ -74,7 +107,7 @@ def get_scheduler() -> AsyncIOScheduler:
         )
 
         _scheduler.add_job(
-            _job_url_discovery,
+            _job_url_discovery_weekday,
             trigger=CronTrigger(day_of_week="mon-fri", hour=6, minute=0,
                                 timezone=settings.collector_timezone),
             id="weekday_url_discovery",
@@ -83,7 +116,17 @@ def get_scheduler() -> AsyncIOScheduler:
             coalesce=True,
         )
 
-        log.info("scheduler: 2 jobs configurados (weekly_segment_discovery, weekday_url_discovery)")
+        _scheduler.add_job(
+            _job_url_discovery_sunday,
+            trigger=CronTrigger(day_of_week="sun", hour=10, minute=0,
+                                timezone=settings.collector_timezone),
+            id="sunday_url_discovery",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+
+        log.info("scheduler: 3 jobs configurados (weekly_segment_discovery, weekday_url_discovery, sunday_url_discovery)")
 
     return _scheduler
 

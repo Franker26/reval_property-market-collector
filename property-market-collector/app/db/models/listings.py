@@ -4,12 +4,23 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import BigInteger, Boolean, ForeignKey, Index, Integer, Numeric, Text, TIMESTAMP, UniqueConstraint
+from sqlalchemy import BigInteger, ForeignKey, Index, Integer, Numeric, Text, TIMESTAMP, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
 from .base import Base
+
+
+# Sección de estado observable — idéntica en listing_entities y listing_snapshots.
+# Representa el estado de una publicación en un momento dado.
+#
+# listing_entities  = estado actual (mutable)
+# listing_snapshots = registro histórico por cada cambio (append-only)
+#
+# Campos exclusivos de listing_entities  : source_id, external_id, first_seen_at,
+#                                          last_seen_at, last_changed_at, updated_at
+# Campos exclusivos de listing_snapshots : listing_id, captured_at
 
 
 class ListingEntity(Base):
@@ -23,22 +34,22 @@ class ListingEntity(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     source_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("market_sources.id"), nullable=False)
     external_id: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # ── Estado observable ─────────────────────────────────────────────────────
     canonical_url: Mapped[Optional[str]] = mapped_column(Text)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="unknown")
+    source_modified_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
 
-    # ── Publicación ───────────────────────────────────────────────────────────
     operation_type: Mapped[Optional[str]] = mapped_column(Text)
     property_type: Mapped[Optional[str]] = mapped_column(Text)
     generated_title: Mapped[Optional[str]] = mapped_column(Text)
     description: Mapped[Optional[str]] = mapped_column(Text)
 
-    # ── Precio ────────────────────────────────────────────────────────────────
     price_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric)
     price_currency: Mapped[Optional[str]] = mapped_column(Text)
     expenses_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric)
     expenses_currency: Mapped[Optional[str]] = mapped_column(Text)
 
-    # ── Superficie y características ──────────────────────────────────────────
     surface_total: Mapped[Optional[Decimal]] = mapped_column(Numeric)
     surface_covered: Mapped[Optional[Decimal]] = mapped_column(Numeric)
     surface_unit: Mapped[Optional[str]] = mapped_column(Text)
@@ -51,7 +62,6 @@ class ListingEntity(Base):
     disposition: Mapped[Optional[str]] = mapped_column(Text)
     orientation: Mapped[Optional[str]] = mapped_column(Text)
 
-    # ── Ubicación ─────────────────────────────────────────────────────────────
     address: Mapped[Optional[str]] = mapped_column(Text)
     neighborhood: Mapped[Optional[str]] = mapped_column(Text)
     city: Mapped[Optional[str]] = mapped_column(Text)
@@ -59,20 +69,17 @@ class ListingEntity(Base):
     lat: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 6))
     lon: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 6))
 
-    # ── Vendedor ──────────────────────────────────────────────────────────────
     seller_id: Mapped[Optional[str]] = mapped_column(Text)
     seller_name: Mapped[Optional[str]] = mapped_column(Text)
     seller_type: Mapped[Optional[str]] = mapped_column(Text)
 
-    # ── Extra (datos portal-específicos) ──────────────────────────────────────
     extra_data: Mapped[Optional[dict]] = mapped_column(JSONB)
 
-    # ── Lifecycle ─────────────────────────────────────────────────────────────
-    source_modified_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
+    # ── Lifecycle (solo en entities) ──────────────────────────────────────────
+    content_hash: Mapped[Optional[str]] = mapped_column(Text)
     first_seen_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
     last_seen_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
     last_changed_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
-    content_hash: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
@@ -92,25 +99,22 @@ class ListingSnapshot(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     listing_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("listing_entities.id"), nullable=False)
     captured_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
-    content_hash: Mapped[str] = mapped_column(Text, nullable=False)
 
-    # ── Estado en el momento del snapshot ─────────────────────────────────────
+    # ── Estado observable (idéntico a listing_entities) ───────────────────────
+    canonical_url: Mapped[Optional[str]] = mapped_column(Text)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="unknown")
     source_modified_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
 
-    # ── Publicación ───────────────────────────────────────────────────────────
     operation_type: Mapped[Optional[str]] = mapped_column(Text)
     property_type: Mapped[Optional[str]] = mapped_column(Text)
     generated_title: Mapped[Optional[str]] = mapped_column(Text)
     description: Mapped[Optional[str]] = mapped_column(Text)
 
-    # ── Precio ────────────────────────────────────────────────────────────────
     price_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric)
     price_currency: Mapped[Optional[str]] = mapped_column(Text)
     expenses_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric)
     expenses_currency: Mapped[Optional[str]] = mapped_column(Text)
 
-    # ── Superficie y características ──────────────────────────────────────────
     surface_total: Mapped[Optional[Decimal]] = mapped_column(Numeric)
     surface_covered: Mapped[Optional[Decimal]] = mapped_column(Numeric)
     surface_unit: Mapped[Optional[str]] = mapped_column(Text)
@@ -123,7 +127,6 @@ class ListingSnapshot(Base):
     disposition: Mapped[Optional[str]] = mapped_column(Text)
     orientation: Mapped[Optional[str]] = mapped_column(Text)
 
-    # ── Ubicación ─────────────────────────────────────────────────────────────
     address: Mapped[Optional[str]] = mapped_column(Text)
     neighborhood: Mapped[Optional[str]] = mapped_column(Text)
     city: Mapped[Optional[str]] = mapped_column(Text)
@@ -131,16 +134,14 @@ class ListingSnapshot(Base):
     lat: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 6))
     lon: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 6))
 
-    # ── Vendedor ──────────────────────────────────────────────────────────────
     seller_id: Mapped[Optional[str]] = mapped_column(Text)
     seller_name: Mapped[Optional[str]] = mapped_column(Text)
     seller_type: Mapped[Optional[str]] = mapped_column(Text)
 
-    # ── Extra (datos portal-específicos) ──────────────────────────────────────
     extra_data: Mapped[Optional[dict]] = mapped_column(JSONB)
 
-    # ── Record creation ───────────────────────────────────────────────────────
+    # ── Interno ───────────────────────────────────────────────────────────────
+    content_hash: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
 
     listing: Mapped["ListingEntity"] = relationship(back_populates="snapshots")
-
