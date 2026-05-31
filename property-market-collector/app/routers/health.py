@@ -62,13 +62,17 @@ async def discovery_health():
 
     active_run_data = None
     if active_run:
+        from app.services.discovery_service import is_cancel_requested
         duration_so_far = (now - active_run.started_at.replace(tzinfo=timezone.utc)).total_seconds()
+        # Normaliza run_type para el check de cancelación (window → base type)
+        _cancel_key = active_run.run_type.replace("_window", "")
         active_run_data = {
             "id": active_run.id,
             "run_type": active_run.run_type,
             "started_at": active_run.started_at.isoformat() if active_run.started_at else None,
             "duration_so_far_s": round(duration_so_far),
             "params": active_run.params_json,
+            "cancel_requested": is_cancel_requested(_cancel_key),
         }
 
     last_run_data = None

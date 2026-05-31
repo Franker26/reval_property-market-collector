@@ -225,11 +225,13 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   .svc-title-row { display: flex; align-items: center; gap: 10px; }
   .svc-title { font-size: 15px; font-weight: 700; color: #e6edf3; }
   .run-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
-  .run-dot.running { background: #3fb950; animation: pulse 1.5s infinite; }
-  .run-dot.idle { background: #484f58; }
+  .run-dot.running  { background: #3fb950; animation: pulse 1.5s infinite; }
+  .run-dot.stopping { background: #d29922; animation: pulse 1s infinite; }
+  .run-dot.idle     { background: #484f58; }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
   .run-status { font-size: 12px; color: #8b949e; }
-  .run-status.running { color: #3fb950; font-weight: 600; }
+  .run-status.running  { color: #3fb950; font-weight: 600; }
+  .run-status.stopping { color: #d29922; font-weight: 600; }
 
   .svc-body { padding: 16px 20px; }
 
@@ -547,13 +549,16 @@ function schedBtn(jobId, jobs) {
     + '</button>';
 }
 
-function buildCard(id, title, isRunning, durationS, progressHtml, chipsHtml, actionsHtml, logKeyword) {
+function buildCard(id, title, isRunning, durationS, progressHtml, chipsHtml, actionsHtml, logKeyword, isStopping) {
+  var statusLabel = isRunning
+    ? (isStopping ? 'STOPPING... ' : 'RUNNING ') + fmtDur(durationS)
+    : 'IDLE';
+  var statusCls = isRunning ? (isStopping ? ' stopping' : ' running') : '';
   return '<div class="svc-header">'
     + '<div class="svc-title-row">'
-    + '<span class="run-dot ' + (isRunning ? 'running' : 'idle') + '"></span>'
+    + '<span class="run-dot ' + (isRunning ? (isStopping ? 'stopping' : 'running') : 'idle') + '"></span>'
     + '<span class="svc-title">' + title + '</span>'
-    + '<span class="run-status' + (isRunning ? ' running' : '') + '">'
-    + (isRunning ? 'RUNNING ' + fmtDur(durationS) : 'IDLE') + '</span>'
+    + '<span class="run-status' + statusCls + '">' + statusLabel + '</span>'
     + '</div></div>'
     + '<div class="svc-body">'
     + (progressHtml || '')
@@ -578,8 +583,9 @@ function renderAll() {
   var jobs = h.scheduler || [];
   var ar  = h.active_run || null;
   var lbt = h.last_completed_by_type || {};
-  var arType = ar ? ar.run_type : null;
-  var arDur  = ar ? ar.duration_so_far_s : null;
+  var arType    = ar ? ar.run_type : null;
+  var arDur     = ar ? ar.duration_so_far_s : null;
+  var arStopping = ar ? !!ar.cancel_requested : false;
 
   // ── Helper: next run info block ──────────────────────────────────────────
   function nextRunBlock(jobIds) {
@@ -633,7 +639,7 @@ function renderAll() {
     ].join('');
     var el = document.getElementById('card-' + id);
     el.className = 'svc-card' + (running ? ' running' : '');
-    el.innerHTML = buildCard(id, 'Segment Discovery', running, arDur, '', chips, acts, 'segment_discovery');
+    el.innerHTML = buildCard(id, 'Segment Discovery', running, arDur, '', chips, acts, 'segment_discovery', running && arStopping);
     restoreLogState(id);
   })();
 
@@ -677,7 +683,7 @@ function renderAll() {
     ].join('');
     var el = document.getElementById('card-' + id);
     el.className = 'svc-card' + (running ? ' running' : '');
-    el.innerHTML = buildCard(id, 'URL Discovery', running, arDur, progHtml, chips, acts, 'url_discovery');
+    el.innerHTML = buildCard(id, 'URL Discovery', running, arDur, progHtml, chips, acts, 'url_discovery', running && arStopping);
     restoreLogState(id);
   })();
 
@@ -706,7 +712,7 @@ function renderAll() {
     ].join('');
     var el = document.getElementById('card-' + id);
     el.className = 'svc-card' + (running ? ' running' : '');
-    el.innerHTML = buildCard(id, 'Incremental Monitor', running, arDur, '', chips, acts, 'incremental_monitor');
+    el.innerHTML = buildCard(id, 'Incremental Monitor', running, arDur, '', chips, acts, 'incremental_monitor', running && arStopping);
     restoreLogState(id);
   })();
 
