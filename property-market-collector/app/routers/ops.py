@@ -539,10 +539,17 @@ function renderAll() {
   var arType = ar ? ar.run_type : null;
   var arDur  = ar ? ar.duration_so_far_s : null;
 
+  // ── Helpers: check scheduler state ──────────────────────────────────────
+  function jobPaused(jobId) {
+    for (var i = 0; i < jobs.length; i++) { if (jobs[i].id === jobId) return jobs[i].paused; }
+    return true;
+  }
+
   // ── Segment Discovery ────────────────────────────────────────────────────
   (function() {
     var id = 'segment-discovery';
     var running = arType === 'segment_discovery';
+    var sdSchedActive = !jobPaused('weekly_segment_discovery');
     saveLogState(id);
     var lsd = lbt.segment_discovery || null;
     var lsdStatus = lsd ? (lsd.status || '') : '';
@@ -555,9 +562,12 @@ function renderAll() {
         lsdStatus === 'success' ? 'good' : lsdStatus === 'failed' ? 'bad' : 'sm'),
     ].join('');
     var ld = _loading['segment_discovery'];
+    var runDisabled = ld || sdSchedActive;
+    var runTitle = sdSchedActive ? 'Pausá el scheduler antes de ejecutar manualmente' : '';
     var acts = [
       '<button class="btn btn-run" onclick="triggerRun(&#39;segment_discovery&#39;,&#39;/discovery/segment-discovery&#39;)"'
-        + (ld ? ' disabled' : '') + '>' + (ld ? 'Iniciando...' : '► Ejecutar') + '</button>',
+        + (runDisabled ? ' disabled' : '') + (runTitle ? ' title="' + runTitle + '"' : '') + '>'
+        + (ld ? 'Iniciando...' : '► Ejecutar') + '</button>',
       '<button class="btn btn-stop" onclick="cancelRun(&#39;segment_discovery&#39;)"'
         + (!running ? ' disabled' : '') + '>■ Cancelar</button>',
       schedBtn('weekly_segment_discovery', jobs),
@@ -571,7 +581,8 @@ function renderAll() {
   // ── URL Discovery ────────────────────────────────────────────────────────
   (function() {
     var id = 'url-discovery';
-    var running = arType === 'url_discovery' || arType === 'url_discovery_window';
+    var running = arType === 'url_discovery_window';
+    var urlSchedActive = !jobPaused('weekday_url_discovery') || !jobPaused('sunday_url_discovery');
     saveLogState(id);
     var total = sp.total || 0, complete = sp.complete || 0;
     var pct = total > 0 ? Math.round(complete / total * 100) : 0;
@@ -593,12 +604,16 @@ function renderAll() {
       chip('Ultimo', lud ? fmtAgo(lud.finished_at) : '—'),
     ].join('');
     var ld = _loading['url_discovery'];
+    var runDisabled = ld || urlSchedActive;
+    var runTitle = urlSchedActive ? 'Pausá ambos schedulers antes de ejecutar manualmente' : '';
     var acts = [
       '<button class="btn btn-run" onclick="triggerRun(&#39;url_discovery&#39;,&#39;/discovery/url-discovery&#39;)"'
-        + (ld ? ' disabled' : '') + '>' + (ld ? 'Iniciando...' : '► Ejecutar') + '</button>',
+        + (runDisabled ? ' disabled' : '') + (runTitle ? ' title="' + runTitle + '"' : '') + '>'
+        + (ld ? 'Iniciando...' : '► Ejecutar') + '</button>',
       '<button class="btn btn-stop" onclick="cancelRun(&#39;url_discovery&#39;)"'
         + (!running ? ' disabled' : '') + '>■ Cancelar</button>',
       schedBtn('weekday_url_discovery', jobs),
+      schedBtn('sunday_url_discovery', jobs),
     ].join('');
     var el = document.getElementById('card-' + id);
     el.className = 'svc-card' + (running ? ' running' : '');

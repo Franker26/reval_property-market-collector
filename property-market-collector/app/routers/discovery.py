@@ -1,16 +1,16 @@
 """
 Endpoints para triggear manualmente las fases del pipeline de discovery.
 
-Todas las operaciones son asíncronas (background tasks):
-el endpoint devuelve inmediatamente con el run_id,
-y el progreso se consulta vía GET /runs/{run_id}.
+Regla: el trigger manual requiere que el scheduler correspondiente esté pausado.
+De esta forma siempre hay un único flujo de ejecución, sin solapamientos.
 """
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
 log = logging.getLogger(__name__)
@@ -18,18 +18,26 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/discovery", tags=["discovery"])
 
 
-# ── Request models ────────────────────────────────────────────────────────────
+# ── Scheduler guard ───────────────────────────────────────────────────────────
 
+def _all_paused(*job_ids: str) -> bool:
+    """True si todos los jobs dados están pausados (o no existen)."""
+    try:
+        from app.services.scheduler_service import get_scheduler
+        sched = get_scheduler()
+        return all(
+            sched.get_job(jid) is None or sched.get_job(jid).next_run_time is None
+            for jid in job_ids
+        )
+    except Exception:
+        return True  # scheduler no disponible → permitir trigger manual
+
+
+# ── Request models ────────────────────────────────────────────────────────────
 
 class SegmentDiscoveryRequest(BaseModel):
     operations: Optional[list[str]] = None
     locations: Optional[list[str]] = None
-
-
-class UrlDiscoveryRequest(BaseModel):
-    operation_key: Optional[str] = None
-    location_key: Optional[str] = None
-    max_pages_per_segment: Optional[int] = None
 
 
 class MonitorRequest(BaseModel):
@@ -38,7 +46,6 @@ class MonitorRequest(BaseModel):
 
 
 # ── Background runners ────────────────────────────────────────────────────────
-
 
 async def _bg_segment_discovery(
     operations: Optional[list[str]],
@@ -52,21 +59,15 @@ async def _bg_segment_discovery(
         log.error("bg segment_discovery error: %s", exc)
 
 
-async def _bg_url_discovery(
-    operation_key: Optional[str],
-    location_key: Optional[str],
-    max_pages_per_segment: Optional[int],
-) -> None:
+async def _bg_url_discovery_manual() -> None:
+    """Trigger manual: usa la misma cola que el scheduler, con ventana de 24h."""
     try:
-        from app.services.discovery_service import run_url_discovery
-        result = await run_url_discovery(
-            operation_key=operation_key,
-            location_key=location_key,
-            max_pages_per_segment=max_pages_per_segment,
-        )
-        log.info("bg url_discovery finalizado: %s", result)
+        from app.services.discovery_service import run_url_discovery_window
+        stop_at = datetime.now(timezone.utc) + timedelta(hours=24)
+        result = await run_url_discovery_window(stop_at=stop_at)
+        log.info("bg url_discovery manual finalizado: %s", result)
     except Exception as exc:
-        log.error("bg url_discovery error: %s", exc)
+        log.error("bg url_discovery manual error: %s", exc)
 
 
 async def _bg_incremental_monitor(
@@ -86,7 +87,6 @@ async def _bg_incremental_monitor(
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
-
 @router.post("/segment-discovery")
 async def trigger_segment_discovery(
     body: SegmentDiscoveryRequest,
@@ -95,12 +95,15 @@ async def trigger_segment_discovery(
     """
     Inicia el discovery de segmentos precio × superficie.
 
-    Corre en background — retorna inmediatamente con el run_id.
-    Seguir progreso en GET /runs/{run_id}.
-
-    Para tests: pasar operations=["compra"] y locations=["capital_federal"]
-    para limitar el scope y reducir el tiempo de ejecución.
+    Requiere que el scheduler 'weekly_segment_discovery' esté pausado.
+    Seguir progreso en GET /runs?run_type=segment_discovery.
     """
+    if not _all_paused("weekly_segment_discovery"):
+        raise HTTPException(
+            409,
+            "El scheduler 'weekly_segment_discovery' está activo. "
+            "Pausalo antes de triggerear manualmente.",
+        )
     background_tasks.add_task(_bg_segment_discovery, body.operations, body.locations)
     return {
         "status": "started",
@@ -112,24 +115,24 @@ async def trigger_segment_discovery(
 
 
 @router.post("/url-discovery")
-async def trigger_url_discovery(
-    body: UrlDiscoveryRequest,
-    background_tasks: BackgroundTasks,
-):
+async def trigger_url_discovery(background_tasks: BackgroundTasks):
     """
-    Extrae URLs paginando los segmentos hoja existentes.
-    Requiere que segment-discovery haya corrido al menos una vez.
+    Procesa la cola de segmentos pendientes (zonaprop_segment_scan_queue).
+
+    Requiere que los schedulers 'weekday_url_discovery' y 'sunday_url_discovery'
+    estén pausados. La ventana manual dura hasta 24h.
     """
-    background_tasks.add_task(
-        _bg_url_discovery,
-        body.operation_key,
-        body.location_key,
-        body.max_pages_per_segment,
-    )
+    if not _all_paused("weekday_url_discovery", "sunday_url_discovery"):
+        raise HTTPException(
+            409,
+            "El scheduler de url_discovery está activo. "
+            "Pausá 'weekday_url_discovery' y 'sunday_url_discovery' antes de triggerear manualmente.",
+        )
+    background_tasks.add_task(_bg_url_discovery_manual)
     return {
         "status": "started",
-        "message": "URL discovery iniciado en background.",
-        "monitor_url": "GET /runs?run_type=url_discovery",
+        "message": "URL discovery manual iniciado. Procesa cola pendiente con ventana de 24h.",
+        "monitor_url": "GET /runs?run_type=url_discovery_window",
     }
 
 
@@ -138,9 +141,7 @@ async def trigger_incremental_monitor(
     body: MonitorRequest,
     background_tasks: BackgroundTasks,
 ):
-    """
-    Monitoreo incremental: compara counts y rescanea segmentos que cambiaron.
-    """
+    """Monitoreo incremental: compara counts y rescanea segmentos que cambiaron."""
     background_tasks.add_task(_bg_incremental_monitor, body.operation_key, body.location_key)
     return {
         "status": "started",
@@ -151,15 +152,10 @@ async def trigger_incremental_monitor(
 
 @router.post("/scheduler/pause-job/{job_id}")
 async def pause_scheduler_job(job_id: str):
-    """
-    Pausa un job del scheduler por ID (ej: weekly_segment_discovery, weekday_url_discovery).
-    El job queda registrado pero no se dispara hasta que se llame /resume-job.
-    """
-    from app.services.scheduler_service import get_scheduler
-    sched = get_scheduler()
+    """Pausa un job del scheduler por ID."""
+    sched = _get_sched()
     job = sched.get_job(job_id)
     if job is None:
-        from fastapi import HTTPException
         raise HTTPException(404, f"Job '{job_id}' no encontrado")
     job.pause()
     return {"status": "paused", "job_id": job_id, "next_run": None}
@@ -168,11 +164,9 @@ async def pause_scheduler_job(job_id: str):
 @router.post("/scheduler/resume-job/{job_id}")
 async def resume_scheduler_job(job_id: str):
     """Reactiva un job previamente pausado."""
-    from app.services.scheduler_service import get_scheduler
-    sched = get_scheduler()
+    sched = _get_sched()
     job = sched.get_job(job_id)
     if job is None:
-        from fastapi import HTTPException
         raise HTTPException(404, f"Job '{job_id}' no encontrado")
     job.resume()
     next_run = job.next_run_time
@@ -186,8 +180,7 @@ async def resume_scheduler_job(job_id: str):
 @router.get("/scheduler/jobs")
 async def list_scheduler_jobs():
     """Lista todos los jobs del scheduler con su próxima ejecución y estado."""
-    from app.services.scheduler_service import get_scheduler
-    sched = get_scheduler()
+    sched = _get_sched()
     return [
         {
             "id": job.id,
@@ -196,6 +189,11 @@ async def list_scheduler_jobs():
         }
         for job in sched.get_jobs()
     ]
+
+
+def _get_sched():
+    from app.services.scheduler_service import get_scheduler
+    return get_scheduler()
 
 
 @router.get("/segments")
