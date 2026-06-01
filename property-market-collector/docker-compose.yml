@@ -23,6 +23,7 @@ services:
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
       - ALERT_ERROR_RATE_THRESHOLD=${ALERT_ERROR_RATE_THRESHOLD:-10}
       - ALERT_CONSECUTIVE_4XX_THRESHOLD=${ALERT_CONSECUTIVE_4XX_THRESHOLD:-3}
+      - REVAL_MI_API_KEY=${REVAL_MI_API_KEY:-}
     volumes:
       - /srv/data/reval_mi/app/data:/app/data:z
       - /srv/data/reval_mi/app/outputs:/app/outputs:z
