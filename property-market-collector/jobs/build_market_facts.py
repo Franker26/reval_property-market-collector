@@ -157,7 +157,11 @@ async def run(mode: str, batch_size: int, source_id: Optional[int], dry_run: boo
 
         if len(ids) < batch_size:
             break
-        offset += batch_size
+        # En modo full el set no cambia, se incrementa el offset normalmente.
+        # En modo incremental, cada commit retira items del set pendiente,
+        # por lo que siempre se consulta desde offset=0.
+        if full_mode:
+            offset += batch_size
 
     elapsed = time.monotonic() - t0
     log.info("=" * 60)
