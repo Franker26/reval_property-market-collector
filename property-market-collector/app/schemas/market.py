@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 _SORTABLE_FIELDS = {
     "price_usd",
@@ -54,6 +54,11 @@ class MarketSearchRequest(BaseModel):
     require_surface: Optional[bool] = None
     require_location: Optional[bool] = None
 
+    # Filtro geográfico por radio (los tres parámetros son obligatorios juntos)
+    latitude: Optional[float] = Field(None, ge=-90, le=90)
+    longitude: Optional[float] = Field(None, ge=-180, le=180)
+    radius_meters: Optional[float] = Field(None, gt=0)
+
     # Ordenamiento
     sort_by: Optional[str] = None
     sort_order: str = Field("desc", pattern="^(asc|desc)$")
@@ -69,6 +74,13 @@ class MarketSearchRequest(BaseModel):
             allowed = ", ".join(sorted(_SORTABLE_FIELDS))
             raise ValueError(f"sort_by debe ser uno de: {allowed}")
         return v
+
+    @model_validator(mode="after")
+    def validate_geo_params(self) -> "MarketSearchRequest":
+        geo = [self.latitude, self.longitude, self.radius_meters]
+        if any(p is not None for p in geo) and not all(p is not None for p in geo):
+            raise ValueError("latitude, longitude y radius_meters deben proporcionarse juntos")
+        return self
 
 
 class MarketListingResult(BaseModel):

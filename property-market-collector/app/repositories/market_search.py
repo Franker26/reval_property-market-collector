@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -83,6 +85,29 @@ def _build_conditions(req: MarketSearchRequest) -> list:
     if req.require_location:
         c.append(ListingMarketFacts.latitude.is_not(None))
         c.append(ListingMarketFacts.longitude.is_not(None))
+
+    # Filtro geográfico por radio (Haversine puro — sin PostGIS)
+    if req.latitude is not None and req.longitude is not None and req.radius_meters is not None:
+        lat, lon, r = req.latitude, req.longitude, req.radius_meters
+
+        # Bounding box pre-filtro en Python — elimina la mayoría de filas antes de Haversine
+        lat_delta = r / 111_000
+        lon_delta = r / (111_000 * math.cos(math.radians(lat)))
+        c.append(ListingMarketFacts.latitude.between(lat - lat_delta, lat + lat_delta))
+        c.append(ListingMarketFacts.longitude.between(lon - lon_delta, lon + lon_delta))
+
+        # Haversine preciso sobre el conjunto reducido
+        haversine = (
+            6_371_000 * 2 * func.asin(
+                func.sqrt(
+                    func.power(func.sin(func.radians((ListingMarketFacts.latitude - lat) / 2)), 2)
+                    + func.cos(func.radians(lat))
+                    * func.cos(func.radians(ListingMarketFacts.latitude))
+                    * func.power(func.sin(func.radians((ListingMarketFacts.longitude - lon) / 2)), 2)
+                )
+            )
+        )
+        c.append(haversine <= r)
 
     return c
 

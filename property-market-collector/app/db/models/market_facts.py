@@ -32,6 +32,8 @@ class ListingMarketFacts(Base):
         Index("idx_lmf_status", "status"),
         Index("idx_lmf_market_bucket", "market_bucket"),
         Index("idx_lmf_days_on_market", "days_on_market"),
+        Index("idx_lmf_geo", "latitude", "longitude",
+              postgresql_where="latitude IS NOT NULL AND longitude IS NOT NULL"),
     )
 
     # ── Identidad ─────────────────────────────────────────────────────────────
