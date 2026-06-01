@@ -10,6 +10,7 @@ class Settings:
     database_url: str
     sync_database_url: str
     service_token: str
+    reval_mi_api_key: str
 
     # Colector
     collector_timezone: str
@@ -37,6 +38,7 @@ class Settings:
             "postgresql://reval:reval@localhost:5432/reval_mi",
         )
         self.service_token = os.getenv("SERVICE_TOKEN", "")
+        self.reval_mi_api_key = os.getenv("REVAL_MI_API_KEY", "")
 
         self.collector_timezone = os.getenv(
             "COLLECTOR_TIMEZONE", "America/Argentina/Buenos_Aires"

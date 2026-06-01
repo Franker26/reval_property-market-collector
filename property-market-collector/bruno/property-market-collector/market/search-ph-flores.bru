@@ -1,0 +1,56 @@
+meta {
+  name: PH en Flores
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{base_url}}/market/facts/search
+  body: json
+  auth: none
+}
+
+headers {
+  X-Reval-MI-Key: {{reval_mi_api_key}}
+}
+
+body:json {
+  {
+    "status": "active",
+    "operation_type": "venta",
+    "property_type": "ph",
+    "province": "Capital Federal",
+    "neighborhood": "Flores",
+    "surface_total_min": 60,
+    "surface_total_max": 140,
+    "require_price": true,
+    "require_surface": true,
+    "min_data_quality_score": 75,
+    "limit": 50
+  }
+}
+
+vars:pre-request {
+  base_url: http://127.0.0.1:8200
+}
+
+tests {
+  test("status 200", function() {
+    expect(res.status).to.equal(200);
+  });
+  test("tiene total y results", function() {
+    expect(res.body.total).to.be.a("number");
+    expect(res.body.results).to.be.an("array");
+  });
+  test("results son PH", function() {
+    res.body.results.forEach(function(r) {
+      expect(r.property_type).to.equal("ph");
+    });
+  });
+}
+
+docs {
+  # PH en Flores — venta
+
+  Busca PH activos en venta en Flores, entre 60 y 140 m².
+}

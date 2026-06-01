@@ -1,0 +1,51 @@
+meta {
+  name: Casas en Villa Luro
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{base_url}}/market/facts/search
+  body: json
+  auth: none
+}
+
+headers {
+  X-Reval-MI-Key: {{reval_mi_api_key}}
+}
+
+body:json {
+  {
+    "status": "active",
+    "operation_type": "venta",
+    "property_type": "casas",
+    "province": "Capital Federal",
+    "neighborhood": "Villa Luro",
+    "surface_total_min": 80,
+    "surface_total_max": 250,
+    "require_price": true,
+    "require_surface": true,
+    "min_data_quality_score": 75,
+    "limit": 50
+  }
+}
+
+vars:pre-request {
+  base_url: http://127.0.0.1:8200
+}
+
+tests {
+  test("status 200", function() {
+    expect(res.status).to.equal(200);
+  });
+  test("tiene total y results", function() {
+    expect(res.body.total).to.be.a("number");
+    expect(res.body.results).to.be.an("array");
+  });
+}
+
+docs {
+  # Casas en Villa Luro — venta
+
+  Busca casas activas en venta en Villa Luro, entre 80 y 250 m².
+}

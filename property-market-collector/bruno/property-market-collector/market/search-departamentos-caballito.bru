@@ -1,0 +1,67 @@
+meta {
+  name: Departamentos en Caballito
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{base_url}}/market/facts/search
+  body: json
+  auth: none
+}
+
+headers {
+  X-Reval-MI-Key: {{reval_mi_api_key}}
+}
+
+body:json {
+  {
+    "status": "active",
+    "operation_type": "venta",
+    "property_type": "departamentos",
+    "province": "Capital Federal",
+    "neighborhood": "Caballito",
+    "surface_total_min": 45,
+    "surface_total_max": 85,
+    "rooms_min": 2,
+    "rooms_max": 4,
+    "require_price": true,
+    "require_surface": true,
+    "min_data_quality_score": 75,
+    "limit": 50
+  }
+}
+
+vars:pre-request {
+  base_url: http://127.0.0.1:8200
+}
+
+tests {
+  test("status 200", function() {
+    expect(res.status).to.equal(200);
+  });
+  test("tiene total y results", function() {
+    expect(res.body.total).to.be.a("number");
+    expect(res.body.results).to.be.an("array");
+  });
+  test("results tienen url y precio", function() {
+    if (res.body.results.length > 0) {
+      var r = res.body.results[0];
+      expect(r.listing_id).to.be.a("number");
+      expect(r.url).to.be.a("string");
+      expect(r.price_usd).to.be.a("number");
+      expect(r.surface_total).to.be.a("number");
+      expect(r.neighborhood).to.equal("Caballito");
+    }
+  });
+}
+
+docs {
+  # Departamentos en Caballito — venta
+
+  Busca departamentos activos en venta en Caballito,
+  entre 45 y 85 m², de 2 a 4 ambientes, con precio y superficie presentes.
+
+  Caso de uso típico para ACM-MI: el sujeto es un departamento en Caballito
+  y se buscan candidatos de mercado comparables.
+}

@@ -1,0 +1,103 @@
+meta {
+  name: Market Search
+  type: folder
+  seq: 3
+}
+
+docs {
+  # POST /market/facts/search
+
+  Búsqueda neutral de publicaciones de mercado desde `listing_market_facts`.
+  Diseñado para ser consumido desde `reval_acm_mi` en Odoo.
+
+  MI devuelve candidatos. ACM-MI calcula score. ACM decide.
+
+  ## Autenticación
+  Header opcional en desarrollo: `X-Reval-MI-Key: <REVAL_MI_API_KEY>`
+  En producción con key configurada, el header es requerido.
+
+  ## Request Body
+  Todos los campos son opcionales. Sin body devuelve las primeras 100 publicaciones
+  ordenadas por `data_quality_score DESC, last_seen_at DESC`.
+
+  ### Filtros disponibles
+  | Campo                  | Tipo    | Descripción                                      |
+  |------------------------|---------|--------------------------------------------------|
+  | status                 | string  | "active", "inactive", etc.                       |
+  | operation_type         | string  | "venta", "alquiler"                              |
+  | property_type          | string  | "departamentos", "casas", "ph", etc.             |
+  | province               | string  | "Capital Federal", "Buenos Aires", etc.          |
+  | city                   | string  | Exacto según normalización                       |
+  | neighborhood           | string  | Exacto según normalización                       |
+  | location_source        | string  | "normalized", "raw"                              |
+  | surface_total_min/max  | float   | m² totales                                      |
+  | surface_covered_min/max| float   | m² cubiertos                                    |
+  | price_usd_min/max      | float   | Precio en USD                                    |
+  | rooms_min/max          | int     | Ambientes                                        |
+  | bedrooms_min/max       | int     | Dormitorios                                      |
+  | bathrooms_min/max      | int     | Baños                                            |
+  | min_data_quality_score | int     | 0-100                                            |
+  | market_bucket          | string  | "venta_departamentos", etc.                      |
+  | require_price          | bool    | Si true: price_usd IS NOT NULL                   |
+  | require_surface        | bool    | Si true: surface_total IS NOT NULL               |
+  | require_location       | bool    | Si true: lat/lon IS NOT NULL                     |
+  | sort_by                | string  | price_usd, price_per_m2_total, surface_total,    |
+  |                        |         | data_quality_score, last_seen_at, days_observed  |
+  | sort_order             | string  | "asc" o "desc" (default: "desc")                 |
+  | limit                  | int     | 1-500 (default: 100)                             |
+  | offset                 | int     | default: 0                                       |
+
+  ## Response 200
+  ```json
+  {
+    "total": 42,
+    "limit": 100,
+    "offset": 0,
+    "results": [
+      {
+        "listing_id": 123,
+        "source": "zonaprop",
+        "external_id": "58868570",
+        "url": "https://www.zonaprop.com.ar/...",
+        "title": "Departamento 3 ambientes en Caballito",
+        "status": "active",
+        "operation_type": "venta",
+        "property_type": "departamentos",
+        "price_usd": 120000,
+        "surface_total": 65,
+        "surface_covered": 58,
+        "price_per_m2_total": 1846,
+        "price_per_m2_covered": 2068,
+        "rooms": 3,
+        "bedrooms": 2,
+        "bathrooms": 1,
+        "garages": 0,
+        "province": "Capital Federal",
+        "city": "Capital Federal",
+        "neighborhood": "Caballito",
+        "latitude": -34.603,
+        "longitude": -58.431,
+        "location_source": "normalized",
+        "geo_cell_id": "-34.60:-58.43",
+        "thumbnail_url": null,
+        "image_count": 0,
+        "has_images": false,
+        "days_observed": 15,
+        "days_on_market": 15,
+        "price_change_count": 1,
+        "price_delta_pct": -3.5,
+        "data_quality_score": 100,
+        "market_bucket": "venta_departamentos",
+        "last_seen_at": "2026-06-01T10:30:00"
+      }
+    ]
+  }
+  ```
+
+  ## Errores
+  | Status | Causa                                    |
+  |--------|------------------------------------------|
+  | 401    | API key inválida o faltante              |
+  | 403    | API key no configurada en el servidor    |
+  | 422    | Parámetros inválidos (limit>500, sort_by inválido, etc.) |
+}

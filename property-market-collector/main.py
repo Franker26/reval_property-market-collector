@@ -114,6 +114,7 @@ if _db_available and WRITE_DATABASE:
     try:
         from app.routers import listings, runs, errors, sources as sources_router, discovery
         from app.routers import health as health_router, ops as ops_router
+        from app.routers import market as market_router
         app.include_router(listings.router)
         app.include_router(runs.router)
         app.include_router(errors.router)
@@ -121,6 +122,7 @@ if _db_available and WRITE_DATABASE:
         app.include_router(discovery.router)
         app.include_router(health_router.router)
         app.include_router(ops_router.router)
+        app.include_router(market_router.router)
     except Exception as exc:
         log.warning("No se pudieron registrar routers de DB: %s", exc)
 
