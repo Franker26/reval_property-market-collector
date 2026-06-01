@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.hashing import compute_listing_hash
+from app.core.sanitize import strip_nulls
 from app.db.models import ListingSnapshot
 
 if TYPE_CHECKING:
@@ -36,7 +37,7 @@ async def create_from_posting(
     snapshot = ListingSnapshot(
         listing_id=listing_id,
         content_hash=content_hash,
-        **{k: posting.get(k) for k in _SNAPSHOT_PAYLOAD_KEYS},
+        **{k: strip_nulls(posting.get(k)) for k in _SNAPSHOT_PAYLOAD_KEYS},
     )
     session.add(snapshot)
     await session.flush()
