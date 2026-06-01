@@ -347,7 +347,7 @@ async def run_url_discovery_window(
                     )
             return error_fn
 
-        error_fn = await make_error_fn(run.id, segment_id)
+        error_fn = await make_error_fn(col_run_id, segment_id)
 
         try:
             seg_stats = await _discover(

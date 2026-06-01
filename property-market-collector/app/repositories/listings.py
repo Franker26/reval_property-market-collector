@@ -11,6 +11,12 @@ from app.core.hashing import compute_listing_hash
 from app.db.models import ListingEntity
 
 # Campos de payload actualizables en CASO C (excluye identidad)
+def _strip_nulls(value):
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    return value
+
+
 _PAYLOAD_KEYS = (
     "canonical_url", "status", "source_modified_at",
     "operation_type", "property_type", "generated_title", "description",
@@ -59,7 +65,7 @@ async def upsert_batch(
                 first_seen_at=now,
                 last_seen_at=now,
                 last_changed_at=now,
-                **{k: posting.get(k) for k in _PAYLOAD_KEYS},
+                **{k: _strip_nulls(posting.get(k)) for k in _PAYLOAD_KEYS},
             )
             session.add(entity)
             results.append((entity, True, True))
@@ -72,7 +78,7 @@ async def upsert_batch(
         else:
             # CASO C: algo cambió — actualizar payload completo
             for key in _PAYLOAD_KEYS:
-                setattr(existing, key, posting.get(key))
+                setattr(existing, key, _strip_nulls(posting.get(key)))
             existing.content_hash = new_hash
             existing.last_seen_at = now
             existing.last_changed_at = now
