@@ -12,7 +12,7 @@ from app.db.models import ListingEntity
 
 # Campos de payload actualizables en CASO C (excluye identidad)
 _PAYLOAD_KEYS = (
-    "canonical_url", "status", "source_modified_at",
+    "canonical_url", "status", "source_modified_at", "publisher_created_at",
     "operation_type", "property_type", "generated_title", "description",
     "price_amount", "price_currency", "expenses_amount", "expenses_currency",
     "surface_total", "surface_covered", "surface_unit",
