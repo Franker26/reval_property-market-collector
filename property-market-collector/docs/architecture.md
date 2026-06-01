@@ -2,10 +2,11 @@
 
 ## Vista general
 
-Pipeline de market intelligence inmobiliario. Dos responsabilidades:
+Pipeline de market intelligence inmobiliario con tres responsabilidades:
 
 1. **Extracción puntual** (`POST /extract`) — dado una URL, extrae datos estructurados de la publicación.
 2. **Discovery autónomo** — descubre y trackea publicaciones sin que el consumidor provea URLs.
+3. **API de búsqueda de mercado** (`POST /market/facts/search`) — expone la capa analítica para consumo externo.
 
 El discovery opera en tres fases secuenciales sobre Zonaprop. Las fuentes de extracción puntual cubren 11 portales.
 
@@ -17,7 +18,8 @@ El discovery opera en tres fases secuenciales sobre Zonaprop. Las fuentes de ext
 main.py                          ← FastAPI app, lifespan, /health, /extract
 app/
   core/
-    config.py                    ← Settings (env vars vía pydantic-settings)
+    config.py                    ← Settings (env vars via os.getenv, singleton lru_cache)
+    auth.py                      ← Dependency require_api_key (X-Reval-MI-Key)
     rate_limiter.py              ← RateLimiter adaptativo con cooldown
     log_buffer.py                ← Ring buffer de logs (GET /logs)
     logging_setup.py             ← Formato uniforme para root logger
@@ -30,12 +32,17 @@ app/
       listings.py                ← ListingEntity, ListingSnapshot
       runs.py                    ← CollectionRun, CollectionError
       events.py                  ← DiscoveryEvent
+      location_normalization.py  ← ListingLocationNormalization
+      market_facts.py            ← ListingMarketFacts
       zonaprop/
         segments.py              ← ZonapropSegment, ZonapropSegmentSnapshot
         scan_queue.py            ← ZonapropSegmentScanQueue
-    session.py                   ← get_async_session_factory()
+    session.py                   ← get_async_session_factory(), get_db (FastAPI dep)
     seed.py                      ← seed de market_sources
+  schemas/
+    market.py                    ← MarketSearchRequest, MarketListingResult, MarketSearchResponse
   repositories/
+    market_search.py             ← search_facts() — query principal del endpoint de mercado
     zonaprop/
       segments.py                ← upsert_segment, sync_pending_scan_queue,
                                     invalidate_changed_segments_after_discovery,
@@ -48,6 +55,7 @@ app/
     discovery_service.py         ← Orquesta las 3 fases + post-discovery invalidation
     scheduler_service.py         ← APScheduler (3 jobs)
   routers/
+    market.py                    ← POST /market/facts/search (API externa)
     discovery.py                 ← POST /discovery/* (triggers manuales)
     ops.py                       ← GET /ops/dashboard, /ops/summary, POST /ops/cancel/*
     logs.py, runs.py, listings.py, errors.py, sources.py
@@ -90,7 +98,14 @@ jobs/                            ← Scripts standalone para operaciones batch
 | `zonaprop_segment_snapshots` | Historial de total_count por segmento |
 | `zonaprop_segment_scan_queue` | Cola de escaneo de URLs por segmento |
 
-Schema creado automáticamente en el arranque via `Base.metadata.create_all()`.
+**Capa analítica:**
+
+| Tabla | Propósito |
+|---|---|
+| `listing_location_normalization` | Ubicación cruda + normalizada por publicación |
+| `listing_market_facts` | Métricas pre-calculadas por publicación (fuente del endpoint de búsqueda) |
+
+Schema creado automáticamente en el arranque via `Base.metadata.create_all()`. Columnas en tablas existentes: migraciones SQL manuales en `migrations/`.
 
 ---
 
@@ -106,23 +121,23 @@ Construye el árbol adaptativo precio × superficie por cada combinación operac
 3. Si count > umbral y depth < max_depth → divide por precio (si ancho > 10k USD) o superficie (si ancho > 10 m²).
 4. Al llegar a max_depth con count > umbral → hoja oversized.
 
-**Persistencia**: upsert idempotente por `uq_zonaprop_segments_boundaries` (portal, operation_key, province_key, price_min, price_max, surface_min, surface_max). Segmentos existentes se reactivan; nuevos se crean.
+**Persistencia**: upsert idempotente por `uq_zonaprop_segments_boundaries`. Segmentos existentes se reactivan; nuevos se crean.
 
 **Al finalizar**:
-1. `sync_pending_scan_queue` → inserta en `zonaprop_segment_scan_queue` las hojas activas sin entrada (`ON CONFLICT DO NOTHING`).
-2. `invalidate_changed_segments_after_discovery` → compara los 2 últimos snapshots por segmento; si `|delta_abs| >= 30` o `delta_pct >= 2%`, reinvalida entradas `complete` a `pending` con `reason` y `priority` (high/normal).
+1. `sync_pending_scan_queue` → inserta entradas faltantes en la cola.
+2. `invalidate_changed_segments_after_discovery` → reinvalida entradas `complete` a `pending` si el total_count cambió significativamente.
 
 ### Fase 2 — url_discovery_window (L-V 06:00-18:30 AR, domingos 10:00-16:00 AR)
 
 Consume `zonaprop_segment_scan_queue` en estado `pending`.
 
-- **Resumable**: runs colgados (>6h en `running`) se devuelven a `pending` al inicio de cada ventana.
-- **Ciclo por segmento**: `pending` → `running` → `complete` | `failed` (máx 3 intentos → `failed` definitivo).
+- **Resumable**: runs colgados (>6h) se devuelven a `pending` al inicio de cada ventana.
+- **Ciclo por segmento**: `pending` → `running` → `complete` | `failed` (máx 3 intentos).
 - **Persist callback**: por cada página, upsert batch en `listing_entities` + `listing_snapshots`.
 
 ### Fase 3 — incremental_monitor (bajo demanda)
 
-Consulta el total_count actual de cada segmento activo contra la API y lo compara con el snapshot anterior. Rescanea los que cambiaron sin reconstruir el árbol.
+Consulta el total_count actual de cada segmento activo y lo compara con el snapshot anterior. Rescanea los que cambiaron sin reconstruir el árbol.
 
 ---
 
@@ -135,6 +150,79 @@ Consulta el total_count actual de cada segmento activo contra la API y lo compar
 | C — cambió hash | UPDATE entity con nuevo estado + INSERT snapshot |
 
 `listing_entities` siempre tiene el estado más reciente. `listing_snapshots` es append-only.
+
+---
+
+## Capa analítica
+
+### listing_location_normalization
+
+Separa la ubicación cruda del portal de la geolocalización normalizada/validada.
+
+- lat/lon presente → `geo_status='coordinates'`, copiados como normalized.
+- sin coordenadas → `geo_status='pending'` para geocoding futuro.
+- Actualizada por `jobs/build_location_normalization.py`.
+
+### listing_market_facts
+
+Métricas pre-calculadas para que la API de búsqueda sea eficiente.
+
+- Fuente principal de `POST /market/facts/search`.
+- `price_usd`, `price_per_m2_*`, historial de precios, `data_quality_score` (0/25/50/75/100), `market_bucket`.
+- Ubicación desde `listing_location_normalization` si existe; fallback a raw de entity.
+- Actualizada por `jobs/build_market_facts.py` (incremental o full).
+
+---
+
+## API de búsqueda de mercado
+
+### Endpoint
+
+```
+POST /market/facts/search
+Header: X-Reval-MI-Key: <REVAL_MI_API_KEY>
+```
+
+### Propósito
+
+Expone `listing_market_facts` como API neutral de candidatos de mercado.
+
+```
+MI devuelve candidatos filtrables.
+reval_acm_mi (Odoo) calcula score de comparabilidad.
+reval_acm_integrations extrae live la URL aceptada.
+reval_acm decide el comparable.
+```
+
+MI no sabe qué es un comparable. No hace scoring, no rankea por similitud, no selecciona automáticamente.
+
+### Componentes
+
+| Archivo | Rol |
+|---|---|
+| `app/schemas/market.py` | Contrato Pydantic de request y response |
+| `app/repositories/market_search.py` | Query con JOIN a `listing_entities` y `market_sources` |
+| `app/routers/market.py` | FastAPI router + serialización |
+| `app/core/auth.py` | Dependency `require_api_key` |
+
+### Query
+
+La query principal une tres tablas:
+- `listing_market_facts` — datos analíticos (fuente principal)
+- `listing_entities` — `canonical_url`, `generated_title`, `rooms`, `bedrooms`, `bathrooms`, `garages` (no están en market_facts)
+- `market_sources` (LEFT JOIN) — `code` para el campo `source` en la response
+
+### Autenticación
+
+`REVAL_MI_API_KEY` en `.env` y en `docker-compose.yml` (variable `${REVAL_MI_API_KEY:-}`).
+
+- Sin key configurada + `APP_ENV=development` → permite acceso (conveniencia local).
+- Sin key configurada + `APP_ENV=production` → 403.
+- Key incorrecta → 401.
+
+### Filtros
+
+Todos opcionales. Los flags `require_price/require_surface/require_location` solo aplican condición `IS NOT NULL` si vienen `true` — no se hardcodean como condición global.
 
 ---
 

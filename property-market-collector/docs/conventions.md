@@ -4,14 +4,14 @@
 
 - **Python 3.12+**, async/await en todo el código de I/O.
 - Type hints obligatorios en funciones públicas.
-- Pydantic v2 para modelos de datos (`PropertyListing`).
+- Pydantic v2 para modelos de datos (`PropertyListing`, schemas de API en `app/schemas/`).
 - Sin suite de tests automatizada — validar con Bruno + smoke tests manuales.
 
 ## Git
 
 - Commits en español, formato: `tipo(scope): descripción`
 - Tipos: `feat`, `fix`, `refactor`, `docs`, `chore`
-- Ejemplo: `feat(discovery): agregar invalidación incremental post-segment_discovery`
+- Ejemplo: `feat(market): endpoint POST /market/facts/search para reval_acm_mi`
 
 ---
 
@@ -21,6 +21,7 @@
 - En `group_by`, pasar la expresión directamente (no `text("alias")`): `group_by(ZonapropSegment.status)`, no `group_by(text("status"))`.
 - Los updates con `session.execute(update(...).values(...))` **no disparan** `onupdate`. Siempre incluir `updated_at=datetime.now(timezone.utc)` explícitamente en los `.values()`.
 - Para window functions: `func.row_number().over(partition_by=..., order_by=...)`.
+- En queries multi-tabla (SELECT con JOIN), `result.all()` devuelve `Row` donde el modelo ORM se accede por nombre de clase: `row.ListingMarketFacts`, `row.canonical_url`.
 
 ## Schema
 
@@ -32,7 +33,22 @@
 
 - Cada función del repositorio recibe `session: AsyncSession` ya abierta — no abre ni commitea transacciones propias.
 - Las funciones que modifican datos se llaman dentro de `async with session.begin()` en el caller (service o job).
-- Nombres: `upsert_*`, `get_*`, `mark_*`, `sync_*`, `deactivate_*`, `invalidate_*`.
+- Nombres: `upsert_*`, `get_*`, `mark_*`, `sync_*`, `deactivate_*`, `invalidate_*`, `search_*`.
+- Los repositorios de búsqueda (read-only) devuelven `tuple[int, list[Row]]` — count total + resultados paginados.
+
+## Schemas de API (`app/schemas/`)
+
+- Un archivo por dominio funcional (ej: `market.py`).
+- Los schemas de request usan `@field_validator` para whitelists (ej: `sort_by`). No validar en el router.
+- Las constraints de rango van en `Field(..., ge=..., le=...)`.
+- Los flags opt-in (`require_price`, `require_surface`, `require_location`) son `Optional[bool] = None`. Solo aplican condición en la query si vienen `True` — nunca hardcodear NULLs globales.
+
+## Autenticación
+
+- `app/core/auth.py` — dependency `require_api_key` para endpoints externos.
+- Header `X-Reval-MI-Key` → variable Python `x_reval_mi_key` (FastAPI normaliza hyphens a underscores).
+- Sin key en `.env` + `APP_ENV=development` → permite acceso. Sin key + `APP_ENV=production` → 403.
+- Toda variable nueva de env va en: `app/core/config.py` (class + `__init__`), `.env.example`, `docker-compose.yml` (sección `environment:` con `${VAR:-}`). Los tres lugares.
 
 ## Discovery pipeline
 
@@ -54,3 +70,9 @@
 
 - Toda alerta pasa por `app.core.alerts.dispatch(event_type, level, message, context_dict)`.
 - No llamar a Telegram directamente desde repositorios ni desde el engine.
+
+## Separación de responsabilidades
+
+MI no calcula score de comparables, no rankea por similitud, no selecciona automáticamente.
+Esa lógica vive en `reval_acm_mi` (Odoo).
+`POST /market/facts/search` devuelve candidatos filtrables, nada más.
