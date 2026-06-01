@@ -79,21 +79,17 @@ def compute_facts(entity, snapshots: list, location_norm, now: datetime) -> dict
             price_delta_pct = (price_delta_usd / initial_price_usd * 100).quantize(Decimal("0.01"))
 
     # ── Tiempo en mercado ─────────────────────────────────────────────────────
+    # La API de discovery no devuelve fecha de publicación del aviso.
+    # Usamos first_seen_at como proxy (primera vez que Reval observó el listing).
     now_aware = _aware(now)
-    publisher_created_at_aware = _aware(entity.publisher_created_at)
-    first_seen_at_aware        = _aware(entity.first_seen_at)
+    first_seen_at_aware = _aware(entity.first_seen_at)
 
-    days_published: Optional[int] = (
-        (now_aware - publisher_created_at_aware).days
-        if publisher_created_at_aware is not None and now_aware is not None
-        else None
-    )
     days_observed: Optional[int] = (
         (now_aware - first_seen_at_aware).days
         if first_seen_at_aware is not None and now_aware is not None
         else None
     )
-    days_on_market = days_published if days_published is not None else days_observed
+    days_on_market = days_observed
 
     # ── Calidad de datos ──────────────────────────────────────────────────────
     has_price   = entity.price_amount is not None and entity.price_currency is not None
@@ -149,12 +145,10 @@ def compute_facts(entity, snapshots: list, location_norm, now: datetime) -> dict
         "surface_covered":      entity.surface_covered,
         "price_per_m2_total":   price_per_m2_total,
         "price_per_m2_covered": price_per_m2_covered,
-        "publisher_created_at": entity.publisher_created_at,
-        "first_seen_at":        entity.first_seen_at,
-        "last_seen_at":         entity.last_seen_at,
-        "days_published":       days_published,
-        "days_observed":        days_observed,
-        "days_on_market":       days_on_market,
+        "first_seen_at":  entity.first_seen_at,
+        "last_seen_at":   entity.last_seen_at,
+        "days_observed":  days_observed,
+        "days_on_market": days_on_market,
         "initial_price_usd":    initial_price_usd,
         "current_price_usd":    current_price_usd,
         "min_price_usd":        min_price_usd,

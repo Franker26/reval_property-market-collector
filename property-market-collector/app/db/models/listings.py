@@ -39,7 +39,6 @@ class ListingEntity(Base):
     canonical_url: Mapped[Optional[str]] = mapped_column(Text)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="unknown")
     source_modified_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
-    publisher_created_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
 
     operation_type: Mapped[Optional[str]] = mapped_column(Text)
     property_type: Mapped[Optional[str]] = mapped_column(Text)
@@ -105,7 +104,6 @@ class ListingSnapshot(Base):
     canonical_url: Mapped[Optional[str]] = mapped_column(Text)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="unknown")
     source_modified_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
-    publisher_created_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
 
     operation_type: Mapped[Optional[str]] = mapped_column(Text)
     property_type: Mapped[Optional[str]] = mapped_column(Text)

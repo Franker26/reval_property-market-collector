@@ -284,10 +284,9 @@ class ZonapropAdapter:
         seller_name = pub.get("name")
         seller_type = _SELLER_TYPE.get(str(pub.get("publisherTypeId") or ""))
 
-        # Estado y fechas del portal
+        # Estado y fecha de modificación
         status = _STATUS_MAP.get(raw.get("status") or "", "unknown")
         source_modified_at = _parse_datetime(raw.get("modified_date"))
-        publisher_created_at = _parse_datetime(pub.get("created_date"))
 
         # Nuevos campos con columna propia
         disposition = (features.get("1000019") or {}).get("value") or None
@@ -330,11 +329,12 @@ class ZonapropAdapter:
         if ret_id:
             extra["real_estate_type_id"] = ret_id
 
-        # Publisher extras (created_date ya tiene columna propia: publisher_created_at)
+        # Publisher extras
         for key, dest in (
-            ("url",       "publisher_url"),
-            ("mainPhone", "publisher_phone"),
-            ("premier",   "publisher_premier"),
+            ("url",          "publisher_url"),
+            ("mainPhone",    "publisher_phone"),
+            ("premier",      "publisher_premier"),
+            ("created_date", "publisher_created_date"),
         ):
             val = pub.get(key)
             if val is not None and val != "":
@@ -355,9 +355,8 @@ class ZonapropAdapter:
             "canonical_url":      canonical_url,
             "operation_type":     operation_type,
             "property_type":      property_type,
-            "status":                status,
-            "source_modified_at":    source_modified_at,
-            "publisher_created_at":  publisher_created_at,
+            "status":             status,
+            "source_modified_at": source_modified_at,
             "price_amount":       price_amount,
             "price_currency":     price_currency,
             "expenses_amount":    expenses_amount,

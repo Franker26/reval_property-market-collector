@@ -56,12 +56,12 @@ class ListingMarketFacts(Base):
     price_per_m2_covered: Mapped[Optional[Decimal]] = mapped_column(Numeric)
 
     # ── Tiempo en mercado ─────────────────────────────────────────────────────
-    publisher_created_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
-    first_seen_at:        Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
-    last_seen_at:         Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
-    days_published:       Mapped[Optional[int]]      = mapped_column(Integer)
-    days_observed:        Mapped[Optional[int]]      = mapped_column(Integer)
-    days_on_market:       Mapped[Optional[int]]      = mapped_column(Integer)
+    # days_on_market = days_observed = (now - first_seen_at).days
+    # No tenemos fecha de publicación del aviso desde la API de discovery.
+    first_seen_at:  Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
+    last_seen_at:   Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
+    days_observed:  Mapped[Optional[int]]      = mapped_column(Integer)
+    days_on_market: Mapped[Optional[int]]      = mapped_column(Integer)
 
     # ── Historial de precios ──────────────────────────────────────────────────
     initial_price_usd:    Mapped[Optional[Decimal]]  = mapped_column(Numeric)
