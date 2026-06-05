@@ -1,6 +1,7 @@
 """Repositorio para listing_market_facts."""
 from __future__ import annotations
 
+from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,6 +33,7 @@ async def upsert_facts_batch(session: AsyncSession, facts_list: list[dict]) -> i
 
     stmt = pg_insert(ListingMarketFacts).values(facts_list)
     update_cols = {k: stmt.excluded[k] for k in _UPDATE_KEYS if k in facts_list[0]}
+    update_cols["updated_at"] = func.now()
     stmt = stmt.on_conflict_do_update(
         index_elements=["listing_id"],
         set_=update_cols,
