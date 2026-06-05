@@ -65,13 +65,18 @@ def compute_location(entity: ListingEntity) -> dict:
     }
 
 
-async def upsert_batch(session: AsyncSession, entities: list[ListingEntity]) -> None:
-    if not entities:
+async def upsert_rows(session: AsyncSession, rows: list[dict]) -> None:
+    """Upsert pre-computed location dicts. Caller must commit the session."""
+    if not rows:
         return
-    rows = [compute_location(e) for e in entities]
     stmt = pg_insert(ListingLocationNormalization).values(rows)
     stmt = stmt.on_conflict_do_update(
         index_elements=["listing_id"],
         set_={k: stmt.excluded[k] for k in _UPDATE_KEYS},
     )
     await session.execute(stmt)
+
+
+async def upsert_batch(session: AsyncSession, entities: list[ListingEntity]) -> None:
+    """Compute location from attached entities and upsert. Caller must commit the session."""
+    await upsert_rows(session, [compute_location(e) for e in entities])

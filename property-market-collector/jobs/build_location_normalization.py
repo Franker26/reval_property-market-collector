@@ -107,18 +107,19 @@ async def run(mode: str, batch_size: int, source_id: Optional[int], dry_run: boo
                 select(ListingEntity).where(ListingEntity.id.in_(ids))
             )
             entities = list(result.scalars().all())
+            # Compute location dicts while entities are still attached to the session.
+            location_rows = [loc_norm_repo.compute_location(e) for e in entities]
 
-        total_processed += len(entities)
-
-        if not dry_run:
-            async with factory() as session:
-                await loc_norm_repo.upsert_batch(session, entities)
+            if not dry_run:
+                await loc_norm_repo.upsert_rows(session, location_rows)
                 await session.commit()
-            total_upserted += len(entities)
+                total_upserted += len(location_rows)
+
+        total_processed += len(ids)
 
         log.info(
             "PROGRESO  offset=%d  batch=%d  total=%d",
-            offset, len(entities), total_processed,
+            offset, len(ids), total_processed,
         )
 
         if len(ids) < batch_size:
