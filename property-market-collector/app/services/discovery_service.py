@@ -13,6 +13,7 @@ from app.db.session import get_async_session_factory
 from app.repositories import collection_errors as errors_repo
 from app.repositories import collection_runs as runs_repo
 from app.repositories import listings as listings_repo
+from app.repositories import location_normalization as loc_norm_repo
 from app.repositories import sources as sources_repo
 from app.repositories.zonaprop import segments as seg_repo
 from app.repositories.zonaprop import scan_queue as run_repo
@@ -303,6 +304,7 @@ async def run_url_discovery_window(
                         source_id=source_id,
                         postings=postings,
                     )
+                    changed_entities = []
                     for entity, is_new, needs_snapshot in results:
                         if needs_snapshot:
                             posting = next(p for p in postings if p["external_id"] == entity.external_id)
@@ -312,10 +314,12 @@ async def run_url_discovery_window(
                                 posting=posting,
                                 content_hash=entity.content_hash,
                             )
+                            changed_entities.append(entity)
                         if is_new:
                             new_count += 1
                         elif needs_snapshot:
                             changed_count += 1
+                    await loc_norm_repo.upsert_batch(sess, changed_entities)
                     total_found += len(postings)
 
         async def make_error_fn(run_id: int, seg_id: int):
@@ -464,6 +468,7 @@ async def run_incremental_monitor(
                     source_id=source_id,
                     postings=postings,
                 )
+                changed_entities = []
                 for entity, is_new, needs_snapshot in results:
                     if needs_snapshot:
                         posting = next(p for p in postings if p["external_id"] == entity.external_id)
@@ -473,6 +478,8 @@ async def run_incremental_monitor(
                             posting=posting,
                             content_hash=entity.content_hash,
                         )
+                        changed_entities.append(entity)
+                await loc_norm_repo.upsert_batch(session, changed_entities)
                 total_written += len(postings)
 
     try:

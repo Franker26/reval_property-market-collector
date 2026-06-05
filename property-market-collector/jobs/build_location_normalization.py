@@ -40,56 +40,6 @@ log = logging.getLogger("jobs.build_location_normalization")
 _DEFAULT_BATCH_SIZE = 500
 
 
-def _compute_location(entity) -> dict:
-    """Computa el dict de facts de ubicación para un listing."""
-    has_coords = entity.lat is not None and entity.lon is not None
-
-    if has_coords:
-        return {
-            "listing_id":              entity.id,
-            "raw_province":            entity.province_name,
-            "raw_city":                entity.city,
-            "raw_neighborhood":        entity.neighborhood,
-            "raw_address":             entity.address,
-            "raw_latitude":            entity.lat,
-            "raw_longitude":           entity.lon,
-            "normalized_country":      "AR",
-            "normalized_province":     entity.province_name,
-            "normalized_city":         entity.city,
-            "normalized_neighborhood": entity.neighborhood,
-            "normalized_address":      entity.address,
-            "normalized_latitude":     entity.lat,
-            "normalized_longitude":    entity.lon,
-            "geo_provider":            "portal",
-            "geo_provider_place_id":   None,
-            "geo_confidence":          "high",
-            "geo_status":              "coordinates",
-            "geo_error":               None,
-        }
-    else:
-        return {
-            "listing_id":              entity.id,
-            "raw_province":            entity.province_name,
-            "raw_city":                entity.city,
-            "raw_neighborhood":        entity.neighborhood,
-            "raw_address":             entity.address,
-            "raw_latitude":            None,
-            "raw_longitude":           None,
-            "normalized_country":      None,
-            "normalized_province":     entity.province_name,
-            "normalized_city":         entity.city,
-            "normalized_neighborhood": entity.neighborhood,
-            "normalized_address":      None,
-            "normalized_latitude":     None,
-            "normalized_longitude":    None,
-            "geo_provider":            None,
-            "geo_provider_place_id":   None,
-            "geo_confidence":          None,
-            "geo_status":              "pending",
-            "geo_error":               None,
-        }
-
-
 async def _get_pending_ids(session, batch_size: int, offset: int, source_id: Optional[int], full_mode: bool) -> list[int]:
     from sqlalchemy import select
     from app.db.models import ListingEntity
@@ -117,37 +67,12 @@ async def _get_pending_ids(session, batch_size: int, offset: int, source_id: Opt
     return [row[0] for row in result.all()]
 
 
-_LLN_UPDATE_KEYS = frozenset({
-    "raw_province", "raw_city", "raw_neighborhood", "raw_address",
-    "raw_latitude", "raw_longitude",
-    "normalized_country", "normalized_province", "normalized_city",
-    "normalized_neighborhood", "normalized_address",
-    "normalized_latitude", "normalized_longitude",
-    "geo_provider", "geo_provider_place_id", "geo_confidence",
-    "geo_status", "geo_error",
-})
-
-
-async def _upsert_batch(session, location_list: list[dict]) -> None:
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
-    from app.db.models.location_normalization import ListingLocationNormalization
-
-    if not location_list:
-        return
-
-    stmt = pg_insert(ListingLocationNormalization).values(location_list)
-    stmt = stmt.on_conflict_do_update(
-        index_elements=["listing_id"],
-        set_={k: stmt.excluded[k] for k in _LLN_UPDATE_KEYS if k in location_list[0]},
-    )
-    await session.execute(stmt)
-
-
 async def run(mode: str, batch_size: int, source_id: Optional[int], dry_run: bool) -> None:
     from sqlalchemy import select
     from app.db.session import get_async_session_factory
     from app.db.models import ListingEntity, Base
     from app.db.models.location_normalization import ListingLocationNormalization
+    from app.repositories import location_normalization as loc_norm_repo
 
     factory = get_async_session_factory()
     full_mode = mode == "full"
@@ -183,14 +108,13 @@ async def run(mode: str, batch_size: int, source_id: Optional[int], dry_run: boo
             )
             entities = list(result.scalars().all())
 
-        location_list = [_compute_location(e) for e in entities]
         total_processed += len(entities)
 
         if not dry_run:
             async with factory() as session:
-                await _upsert_batch(session, location_list)
+                await loc_norm_repo.upsert_batch(session, entities)
                 await session.commit()
-            total_upserted += len(location_list)
+            total_upserted += len(entities)
 
         log.info(
             "PROGRESO  offset=%d  batch=%d  total=%d",
