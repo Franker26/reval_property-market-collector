@@ -1,6 +1,7 @@
 """Repositorio para listing_location_normalization."""
 from __future__ import annotations
 
+from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -72,7 +73,10 @@ async def upsert_rows(session: AsyncSession, rows: list[dict]) -> None:
     stmt = pg_insert(ListingLocationNormalization).values(rows)
     stmt = stmt.on_conflict_do_update(
         index_elements=["listing_id"],
-        set_={k: stmt.excluded[k] for k in _UPDATE_KEYS},
+        set_={
+            **{k: stmt.excluded[k] for k in _UPDATE_KEYS},
+            "updated_at": func.now(),
+        },
     )
     await session.execute(stmt)
 
