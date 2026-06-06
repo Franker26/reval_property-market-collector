@@ -11,7 +11,9 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import case, func, select
 
 from app.core.rate_limiter import get_all_limiter_states
-from app.db.models import CollectionError, CollectionRun, ZonapropSegmentScanQueue
+from app.db.models import CollectionError, CollectionRun, ListingEntity, ZonapropSegmentScanQueue
+from app.db.models.location_normalization import ListingLocationNormalization
+from app.db.models.market_facts import ListingMarketFacts
 from app.db.session import get_async_session_factory
 from app.repositories import collection_errors as errors_repo
 from app.repositories import collection_runs as runs_repo
@@ -129,6 +131,32 @@ async def ops_summary():
             for row in trends_lat_result
         ]
 
+        # Pipeline table counts
+        from sqlalchemy.orm import aliased as _aliased
+        loc_total = (await session.execute(
+            select(func.count()).select_from(ListingLocationNormalization)
+        )).scalar_one()
+
+        mf_total = (await session.execute(
+            select(func.count()).select_from(ListingMarketFacts)
+        )).scalar_one()
+
+        _lln = _aliased(ListingLocationNormalization)
+        loc_pending = (await session.execute(
+            select(func.count())
+            .select_from(ListingEntity)
+            .outerjoin(_lln, _lln.listing_id == ListingEntity.id)
+            .where((_lln.listing_id.is_(None)) | (ListingEntity.updated_at > _lln.updated_at))
+        )).scalar_one()
+
+        _lmf = _aliased(ListingMarketFacts)
+        mf_pending = (await session.execute(
+            select(func.count())
+            .select_from(ListingEntity)
+            .outerjoin(_lmf, _lmf.listing_id == ListingEntity.id)
+            .where((_lmf.listing_id.is_(None)) | (ListingEntity.updated_at > _lmf.updated_at))
+        )).scalar_one()
+
     def _run_dict(r):
         if r is None:
             return None
@@ -192,6 +220,10 @@ async def ops_summary():
             "daily_urls_discovered": daily_urls,
             "daily_errors": daily_errors,
             "daily_avg_latency_ms": daily_latency,
+        },
+        "pipeline_tables": {
+            "location_normalization": {"total": int(loc_total), "pending": int(loc_pending)},
+            "market_facts": {"total": int(mf_total), "pending": int(mf_pending)},
         },
     }
 
@@ -326,6 +358,8 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   <div id="card-segment-discovery" class="svc-card"></div>
   <div id="card-url-discovery"      class="svc-card"></div>
   <div id="card-incremental-monitor" class="svc-card"></div>
+  <div id="card-build-location-normalization" class="svc-card"></div>
+  <div id="card-build-market-facts"           class="svc-card"></div>
   <div class="global-card">
     <div class="global-card-header">Métricas globales</div>
     <div class="global-card-body">
@@ -465,9 +499,11 @@ function toggleSchedule(jobId, isPaused) {
 
 // Mapa de service key → job IDs del scheduler (evita pasar arrays en onclick)
 var _SCHED_JOBS = {
-  'segment_discovery': ['weekly_segment_discovery'],
-  'url_discovery':     ['weekday_url_discovery', 'sunday_url_discovery'],
-  'incremental_monitor': [],
+  'segment_discovery':             ['weekly_segment_discovery'],
+  'url_discovery':                 ['weekday_url_discovery', 'sunday_url_discovery'],
+  'incremental_monitor':           [],
+  'build_location_normalization':  ['build_location_normalization_6h'],
+  'build_market_facts':            ['build_market_facts_6h'],
 };
 
 // ── Mode toggle ───────────────────────────────────────────────────────────────
@@ -601,9 +637,11 @@ function renderAll() {
       var jid = jobIds[i];
       for (var k = 0; k < jobs.length; k++) {
         if (jobs[k].id === jid) {
-          var label = jid === 'weekly_segment_discovery' ? 'Sáb'
-                    : jid === 'weekday_url_discovery'    ? 'L-V'
-                    : jid === 'sunday_url_discovery'     ? 'Dom' : jid;
+          var label = jid === 'weekly_segment_discovery'        ? 'Sáb'
+                    : jid === 'weekday_url_discovery'           ? 'L-V'
+                    : jid === 'sunday_url_discovery'            ? 'Dom'
+                    : jid === 'build_location_normalization_6h' ? 'c/6h'
+                    : jid === 'build_market_facts_6h'           ? 'c/6h' : jid;
           var next = jobs[k].next_run ? fmtLocalDow(jobs[k].next_run) : 'Pausado';
           lines.push('<span style="font-size:11px;color:#8b949e">' + label + ': ' + next + '</span>');
           break;
@@ -723,6 +761,56 @@ function renderAll() {
     var el = document.getElementById('card-' + id);
     el.className = 'svc-card' + (running ? ' running' : '');
     el.innerHTML = buildCard(id, 'Incremental Monitor', running, arDur, '', chips, acts, 'incremental_monitor', running && arStopping);
+    restoreLogState(id);
+  })();
+
+  // ── Build Location Normalization ─────────────────────────────────────────
+  (function() {
+    var id = 'build-location-normalization';
+    var svcKey = 'build_location_normalization';
+    var schedIds = ['build_location_normalization_6h'];
+    var mode = getMode(svcKey);
+    saveLogState(id);
+    var pipeline = (s.pipeline_tables || {});
+    var locStats = pipeline.location_normalization || {};
+    var chips = [
+      chip('Normalizadas', fmtNum(locStats.total)),
+      chip('Pendientes', fmtNum(locStats.pending), (locStats.pending || 0) > 0 ? 'warn' : 'good'),
+    ].join('');
+    var ld = _loading[svcKey];
+    var execBtn = mode === 'manual'
+      ? '<button class="btn btn-run" onclick="triggerRun(&#39;' + svcKey + '&#39;,&#39;/discovery/build-location-normalization&#39;)"'
+          + (ld ? ' disabled' : '') + '>' + (ld ? 'Iniciando...' : '&#9658; Ejecutar') + '</button>'
+      : nextRunBlock(schedIds);
+    var acts = [modeToggle(svcKey), execBtn].join('');
+    var el = document.getElementById('card-' + id);
+    el.className = 'svc-card';
+    el.innerHTML = buildCard(id, 'Location Normalization', false, null, '', chips, acts, 'build_location_normalization', false);
+    restoreLogState(id);
+  })();
+
+  // ── Build Market Facts ────────────────────────────────────────────────────
+  (function() {
+    var id = 'build-market-facts';
+    var svcKey = 'build_market_facts';
+    var schedIds = ['build_market_facts_6h'];
+    var mode = getMode(svcKey);
+    saveLogState(id);
+    var pipeline = (s.pipeline_tables || {});
+    var mfStats = pipeline.market_facts || {};
+    var chips = [
+      chip('Market Facts', fmtNum(mfStats.total)),
+      chip('Pendientes', fmtNum(mfStats.pending), (mfStats.pending || 0) > 0 ? 'warn' : 'good'),
+    ].join('');
+    var ld = _loading[svcKey];
+    var execBtn = mode === 'manual'
+      ? '<button class="btn btn-run" onclick="triggerRun(&#39;' + svcKey + '&#39;,&#39;/discovery/build-market-facts&#39;)"'
+          + (ld ? ' disabled' : '') + '>' + (ld ? 'Iniciando...' : '&#9658; Ejecutar') + '</button>'
+      : nextRunBlock(schedIds);
+    var acts = [modeToggle(svcKey), execBtn].join('');
+    var el = document.getElementById('card-' + id);
+    el.className = 'svc-card';
+    el.innerHTML = buildCard(id, 'Market Facts', false, null, '', chips, acts, 'build_market_facts', false);
     restoreLogState(id);
   })();
 

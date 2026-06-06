@@ -85,6 +85,24 @@ async def _bg_incremental_monitor(
         log.error("bg incremental_monitor error: %s", exc)
 
 
+async def _bg_build_location_normalization() -> None:
+    try:
+        from jobs.build_location_normalization import run
+        await run(mode="incremental", batch_size=500, source_id=None, dry_run=False)
+        log.info("bg build_location_normalization finalizado")
+    except Exception as exc:
+        log.error("bg build_location_normalization error: %s", exc)
+
+
+async def _bg_build_market_facts() -> None:
+    try:
+        from jobs.build_market_facts import run
+        await run(mode="incremental", batch_size=500, source_id=None, dry_run=False)
+        log.info("bg build_market_facts finalizado")
+    except Exception as exc:
+        log.error("bg build_market_facts error: %s", exc)
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.post("/segment-discovery")
@@ -147,6 +165,38 @@ async def trigger_incremental_monitor(
         "status": "started",
         "message": "Incremental monitor iniciado en background.",
         "monitor_url": "GET /runs?run_type=incremental_monitor",
+    }
+
+
+@router.post("/build-location-normalization")
+async def trigger_build_location_normalization(background_tasks: BackgroundTasks):
+    """Ejecuta build_location_normalization incremental en background."""
+    if not _all_paused("build_location_normalization_6h"):
+        raise HTTPException(
+            409,
+            "El scheduler 'build_location_normalization_6h' está activo. "
+            "Pausalo antes de triggerear manualmente.",
+        )
+    background_tasks.add_task(_bg_build_location_normalization)
+    return {
+        "status": "started",
+        "message": "build_location_normalization iniciado en background.",
+    }
+
+
+@router.post("/build-market-facts")
+async def trigger_build_market_facts(background_tasks: BackgroundTasks):
+    """Ejecuta build_market_facts incremental en background."""
+    if not _all_paused("build_market_facts_6h"):
+        raise HTTPException(
+            409,
+            "El scheduler 'build_market_facts_6h' está activo. "
+            "Pausalo antes de triggerear manualmente.",
+        )
+    background_tasks.add_task(_bg_build_market_facts)
+    return {
+        "status": "started",
+        "message": "build_market_facts iniciado en background.",
     }
 
 

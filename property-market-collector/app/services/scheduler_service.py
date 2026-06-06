@@ -90,6 +90,26 @@ async def _job_url_discovery_sunday() -> None:
     )
 
 
+async def _job_build_location_normalization() -> None:
+    log.info("scheduler: build_location_normalization iniciando")
+    try:
+        from jobs.build_location_normalization import run
+        await run(mode="incremental", batch_size=500, source_id=None, dry_run=False)
+        log.info("scheduler: build_location_normalization finalizado")
+    except Exception as exc:
+        log.error("scheduler: error en build_location_normalization — %s", exc)
+
+
+async def _job_build_market_facts() -> None:
+    log.info("scheduler: build_market_facts iniciando")
+    try:
+        from jobs.build_market_facts import run
+        await run(mode="incremental", batch_size=500, source_id=None, dry_run=False)
+        log.info("scheduler: build_market_facts finalizado")
+    except Exception as exc:
+        log.error("scheduler: error en build_market_facts — %s", exc)
+
+
 def get_scheduler() -> AsyncIOScheduler:
     global _scheduler
     if _scheduler is None:
@@ -126,7 +146,31 @@ def get_scheduler() -> AsyncIOScheduler:
             coalesce=True,
         )
 
-        log.info("scheduler: 3 jobs configurados (weekly_segment_discovery, weekday_url_discovery, sunday_url_discovery)")
+        _scheduler.add_job(
+            _job_build_location_normalization,
+            trigger=CronTrigger(hour="0,6,12,18", minute=0,
+                                timezone=settings.collector_timezone),
+            id="build_location_normalization_6h",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+
+        _scheduler.add_job(
+            _job_build_market_facts,
+            trigger=CronTrigger(hour="0,6,12,18", minute=30,
+                                timezone=settings.collector_timezone),
+            id="build_market_facts_6h",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+
+        log.info(
+            "scheduler: 5 jobs configurados"
+            " (weekly_segment_discovery, weekday_url_discovery, sunday_url_discovery,"
+            " build_location_normalization_6h, build_market_facts_6h)"
+        )
 
     return _scheduler
 
