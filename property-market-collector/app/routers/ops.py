@@ -358,6 +358,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   <div id="card-segment-discovery" class="svc-card"></div>
   <div id="card-url-discovery"      class="svc-card"></div>
   <div id="card-incremental-monitor" class="svc-card"></div>
+  <div id="card-refresh-monitor" class="svc-card"></div>
   <div id="card-build-location-normalization" class="svc-card"></div>
   <div id="card-build-market-facts"           class="svc-card"></div>
   <div class="global-card">
@@ -761,6 +762,37 @@ function renderAll() {
     var el = document.getElementById('card-' + id);
     el.className = 'svc-card' + (running ? ' running' : '');
     el.innerHTML = buildCard(id, 'Incremental Monitor', running, arDur, '', chips, acts, 'incremental_monitor', running && arStopping);
+    restoreLogState(id);
+  })();
+
+  // ── Refresh Monitor ──────────────────────────────────────────────────────
+  (function() {
+    var id = 'refresh-monitor';
+    var svcKey = 'refresh_monitor';
+    var running = arType === 'refresh_monitor';
+    saveLogState(id);
+    var last = lbt.refresh_monitor || null;
+    var lastStatus = last ? (last.status || '') : '';
+    var lastStats = last ? (last.stats || {}) : {};
+    var byTier = lastStats.by_tier || {};
+    var prio = h.pending_by_priority || {};
+    var pendRefresh = (prio.refresh_hot||0) + (prio.refresh_warm||0) + (prio.refresh_cold||0);
+    var chips = [
+      chip('Ultimo', last ? fmtAgo(last.finished_at) : '—'),
+      chip('Estado ant.', lastStatus || '—',
+        lastStatus === 'success' ? 'good' : lastStatus === 'failed' ? 'bad' : 'sm'),
+      chip('Reencolados', lastStats.enqueued != null ? fmtNum(lastStats.enqueued) : '—'),
+      chip('hot/warm/cold', (byTier.hot||0)+'/'+(byTier.warm||0)+'/'+(byTier.cold||0), 'sm'),
+      chip('Pend. refresh', fmtNum(pendRefresh), pendRefresh > 0 ? 'warn' : ''),
+    ].join('');
+    var ld = _loading[svcKey];
+    var acts = [
+      '<button class="btn btn-run" onclick="triggerRun(&#39;' + svcKey + '&#39;,&#39;/discovery/refresh-monitor&#39;)"'
+        + (ld ? ' disabled' : '') + '>' + (ld ? 'Iniciando...' : '&#9658; Ejecutar') + '</button>',
+    ].join('');
+    var el = document.getElementById('card-' + id);
+    el.className = 'svc-card' + (running ? ' running' : '');
+    el.innerHTML = buildCard(id, 'Refresh Monitor', running, arDur, '', chips, acts, 'refresh_monitor', false);
     restoreLogState(id);
   })();
 

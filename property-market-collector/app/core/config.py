@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from functools import lru_cache
 
 
@@ -103,3 +104,48 @@ class Settings:
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings()
+
+
+@dataclass(frozen=True)
+class RefreshConfig:
+    """Parámetros del refresh rotativo priorizado de segmentos (Etapa A)."""
+    enabled: bool
+    gap_hours_hot: float
+    gap_hours_warm: float
+    gap_hours_cold: float
+    max_segments_per_cycle: int
+    weight_volatility: float
+    weight_volume: float
+    hot_score_threshold: float
+    warm_score_threshold: float
+    high_volume_threshold: int
+    volatility_lookback_snapshots: int
+    volatility_cap: float
+    min_age_hours: float
+    volume_norm_divisor: float = 2000.0
+
+    def gap_hours_for(self, tier: str) -> float:
+        return {
+            "hot": self.gap_hours_hot,
+            "warm": self.gap_hours_warm,
+            "cold": self.gap_hours_cold,
+        }[tier]
+
+
+@lru_cache(maxsize=1)
+def get_refresh_config() -> RefreshConfig:
+    return RefreshConfig(
+        enabled=os.getenv("REFRESH_MONITOR_ENABLED", "true").lower() == "true",
+        gap_hours_hot=float(os.getenv("REFRESH_GAP_HOURS_HOT", "24")),
+        gap_hours_warm=float(os.getenv("REFRESH_GAP_HOURS_WARM", "96")),
+        gap_hours_cold=float(os.getenv("REFRESH_GAP_HOURS_COLD", "336")),
+        max_segments_per_cycle=int(os.getenv("REFRESH_MAX_SEGMENTS_PER_CYCLE", "50")),
+        weight_volatility=float(os.getenv("REFRESH_WEIGHT_VOLATILITY", "0.75")),
+        weight_volume=float(os.getenv("REFRESH_WEIGHT_VOLUME", "0.25")),
+        hot_score_threshold=float(os.getenv("REFRESH_HOT_SCORE_THRESHOLD", "0.70")),
+        warm_score_threshold=float(os.getenv("REFRESH_WARM_SCORE_THRESHOLD", "0.35")),
+        high_volume_threshold=int(os.getenv("REFRESH_HIGH_VOLUME_THRESHOLD", "1500")),
+        volatility_lookback_snapshots=int(os.getenv("REFRESH_VOLATILITY_LOOKBACK_SNAPSHOTS", "5")),
+        volatility_cap=float(os.getenv("REFRESH_VOLATILITY_CAP", "0.10")),
+        min_age_hours=float(os.getenv("REFRESH_MIN_AGE_HOURS", "12")),
+    )

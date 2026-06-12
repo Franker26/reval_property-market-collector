@@ -280,3 +280,137 @@ async def invalidate_changed_segments_after_discovery(
         "normal": sum(1 for x in to_invalidate if x["priority"] == "normal"),
         "top10": top10,
     }
+
+
+def _compute_volatility(counts: list[int]) -> float:
+    """Promedio de |delta ratio| entre snapshots consecutivos (orden cronológico asc)."""
+    if len(counts) < 2:
+        return 0.0
+    ratios: list[float] = []
+    for prev, cur in zip(counts, counts[1:]):
+        if prev > 0:
+            ratios.append(abs(cur - prev) / prev)
+        elif cur > 0:
+            ratios.append(1.0)
+        else:
+            ratios.append(0.0)
+    return sum(ratios) / len(ratios) if ratios else 0.0
+
+
+async def select_segments_due_for_refresh(
+    session: AsyncSession,
+    portal: str,
+    cfg,
+) -> list[dict]:
+    """
+    Selecciona hojas activas en estado 'complete' vencidas según su tier, para reencolar.
+
+    Hoja activa = is_leaf + status active + total_count > 0 + no oversized.
+    El score combina volatilidad histórica (snapshots) y volumen (total_count) →
+    tier (hot/warm/cold) → gap objetivo. Vencido si age_hours > gap, con guard de edad
+    mínima anti-loop. Ordena por más vencido (overdue ratio) y luego mayor score; aplica cupo.
+    """
+    now = datetime.now(timezone.utc)
+
+    # 1) Volatilidad: últimos N snapshots por segmento hoja activo
+    rn = func.row_number().over(
+        partition_by=ZonapropSegmentSnapshot.segment_id,
+        order_by=ZonapropSegmentSnapshot.captured_at.desc(),
+    ).label("rn")
+    snap_ranked = (
+        select(
+            ZonapropSegmentSnapshot.segment_id.label("segment_id"),
+            ZonapropSegmentSnapshot.total_count.label("total_count"),
+            ZonapropSegmentSnapshot.captured_at.label("captured_at"),
+            rn,
+        )
+        .join(ZonapropSegment, ZonapropSegment.id == ZonapropSegmentSnapshot.segment_id)
+        .where(
+            ZonapropSegment.portal == portal,
+            ZonapropSegment.status == "active",
+            ZonapropSegment.is_leaf == True,  # noqa: E712
+        )
+        .subquery("snap_ranked")
+    )
+    snap_stmt = (
+        select(snap_ranked.c.segment_id, snap_ranked.c.total_count, snap_ranked.c.captured_at)
+        .where(snap_ranked.c.rn <= cfg.volatility_lookback_snapshots)
+        .order_by(snap_ranked.c.segment_id, snap_ranked.c.captured_at)
+    )
+    snap_rows = (await session.execute(snap_stmt)).all()
+    counts_by_seg: dict[int, list[int]] = {}
+    for row in snap_rows:
+        counts_by_seg.setdefault(row.segment_id, []).append(int(row.total_count or 0))
+
+    # 2) Hojas activas con entrada de cola en 'complete'
+    seg_stmt = (
+        select(
+            ZonapropSegment.id.label("segment_id"),
+            ZonapropSegment.total_count.label("total_count"),
+            ZonapropSegmentScanQueue.completed_at.label("completed_at"),
+            ZonapropSegmentScanQueue.updated_at.label("updated_at"),
+            ZonapropSegmentScanQueue.created_at.label("created_at"),
+        )
+        .join(ZonapropSegmentScanQueue, ZonapropSegmentScanQueue.segment_id == ZonapropSegment.id)
+        .where(
+            ZonapropSegment.portal == portal,
+            ZonapropSegment.status == "active",
+            ZonapropSegment.is_leaf == True,  # noqa: E712
+            ZonapropSegment.is_oversized == False,  # noqa: E712
+            ZonapropSegment.total_count > 0,
+            ZonapropSegmentScanQueue.status == "complete",
+        )
+    )
+    seg_rows = (await session.execute(seg_stmt)).all()
+
+    candidates: list[dict] = []
+    for row in seg_rows:
+        total_count = int(row.total_count or 0)
+        volatility = _compute_volatility(counts_by_seg.get(row.segment_id, []))
+        v_norm = min(volatility / cfg.volatility_cap, 1.0) if cfg.volatility_cap > 0 else 0.0
+        s_norm = min(total_count / cfg.volume_norm_divisor, 1.0) if cfg.volume_norm_divisor > 0 else 0.0
+        score = cfg.weight_volatility * v_norm + cfg.weight_volume * s_norm
+
+        if score >= cfg.hot_score_threshold:
+            tier = "hot"
+        elif score >= cfg.warm_score_threshold or total_count >= cfg.high_volume_threshold:
+            tier = "warm"
+        else:
+            tier = "cold"
+        gap_hours = cfg.gap_hours_for(tier)
+
+        # completed_at NULL (legacy / primer ciclo) → fallback a updated_at/created_at
+        ref_ts = row.completed_at or row.updated_at or row.created_at
+        if ref_ts is None:
+            continue
+        if ref_ts.tzinfo is None:
+            ref_ts = ref_ts.replace(tzinfo=timezone.utc)
+        age_hours = (now - ref_ts).total_seconds() / 3600.0
+
+        if age_hours < cfg.min_age_hours:   # guard anti-loop
+            continue
+        if age_hours <= gap_hours:          # no vencido
+            continue
+
+        candidates.append({
+            "segment_id": row.segment_id,
+            "tier": tier,
+            "score": round(score, 4),
+            "age_hours": round(age_hours, 1),
+            "gap_hours": gap_hours,
+            "volatility": round(volatility, 4),
+            "total_count": total_count,
+            "overdue_ratio": age_hours / gap_hours if gap_hours > 0 else age_hours,
+        })
+
+    candidates.sort(key=lambda c: (c["overdue_ratio"], c["score"]), reverse=True)
+    selected = candidates[: cfg.max_segments_per_cycle]
+
+    log.info(
+        "select_segments_due_for_refresh: evaluados=%d vencidos=%d seleccionados=%d (cupo=%d) hot=%d warm=%d cold=%d",
+        len(seg_rows), len(candidates), len(selected), cfg.max_segments_per_cycle,
+        sum(1 for c in selected if c["tier"] == "hot"),
+        sum(1 for c in selected if c["tier"] == "warm"),
+        sum(1 for c in selected if c["tier"] == "cold"),
+    )
+    return selected

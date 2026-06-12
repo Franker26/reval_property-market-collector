@@ -1,7 +1,7 @@
 """Repositorio para listing_entities."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import select
@@ -44,7 +44,7 @@ async def upsert_batch(
     external_ids = [p["external_id"] for p in postings]
     existing_map = await _get_many(session, source_id, external_ids)
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     results: list[tuple[ListingEntity, bool, bool]] = []
 
     for posting in postings:

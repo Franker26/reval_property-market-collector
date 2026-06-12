@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from sqlalchemy import func, select, update
+from sqlalchemy import case, func, select, update
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,6 +12,16 @@ from app.db.models import ZonapropSegment, ZonapropSegmentScanQueue
 
 _STALE_AFTER_HOURS = 6
 _MAX_ATTEMPTS = 3
+
+# Orden de consumo: estructural > refresh hot > nuevos/normales > refresh warm > refresh cold > resto
+_PRIORITY_RANK = case(
+    (ZonapropSegmentScanQueue.priority == "high", 1),
+    (ZonapropSegmentScanQueue.priority == "refresh_hot", 2),
+    (ZonapropSegmentScanQueue.priority == "normal", 3),
+    (ZonapropSegmentScanQueue.priority == "refresh_warm", 4),
+    (ZonapropSegmentScanQueue.priority == "refresh_cold", 5),
+    else_=6,
+)
 
 
 async def reset_stale_running(session: AsyncSession) -> int:
@@ -49,7 +59,11 @@ async def get_pending(session: AsyncSession, portal: str) -> list[ZonapropSegmen
             ZonapropSegment.portal == portal,
             ZonapropSegment.status == "active",
         )
-        .order_by(ZonapropSegmentScanQueue.id)
+        .order_by(
+            _PRIORITY_RANK,
+            ZonapropSegmentScanQueue.completed_at.asc().nulls_first(),
+            ZonapropSegmentScanQueue.id,
+        )
     )
     result = await session.execute(stmt)
     return list(result.scalars().all())
@@ -134,6 +148,59 @@ async def mark_pending(
         .where(ZonapropSegmentScanQueue.id == run_id)
         .values(**values)
     )
+
+
+async def enqueue_refresh(session: AsyncSession, items: list[dict]) -> dict:
+    """
+    Reencola por staleness los segmentos seleccionados por el refresh monitor.
+
+    Idempotente: solo afecta entradas hoy en 'complete' (la cola es una fila por segment_id),
+    por lo que un segundo run no duplica trabajo ni toca pending/running/failed.
+    Setea priority='refresh_<tier>' y reason con tier/edad/score/volatilidad/volumen.
+    """
+    now = datetime.now(timezone.utc)
+    enqueued = 0
+    by_tier = {"hot": 0, "warm": 0, "cold": 0}
+    for item in items:
+        tier = item["tier"]
+        reason = (
+            f"refresh:{tier};age_hours={item['age_hours']};score={item['score']};"
+            f"volatility={item['volatility']};volume={item['total_count']}"
+        )
+        result = await session.execute(
+            update(ZonapropSegmentScanQueue)
+            .where(
+                ZonapropSegmentScanQueue.segment_id == item["segment_id"],
+                ZonapropSegmentScanQueue.status == "complete",
+            )
+            .values(
+                status="pending",
+                priority=f"refresh_{tier}",
+                reason=reason,
+                locked_at=None,
+                attempt_count=0,
+                updated_at=now,
+            )
+        )
+        affected = result.rowcount or 0
+        if affected:
+            enqueued += affected
+            by_tier[tier] += affected
+    return {"enqueued": enqueued, "by_tier": by_tier}
+
+
+async def count_by_priority(session: AsyncSession, portal: Optional[str] = None) -> dict[str, int]:
+    """Distribución de entradas pending por priority. Útil para dashboard del refresh."""
+    stmt = (
+        select(ZonapropSegmentScanQueue.priority, func.count().label("n"))
+        .join(ZonapropSegment, ZonapropSegmentScanQueue.segment_id == ZonapropSegment.id)
+        .where(ZonapropSegmentScanQueue.status == "pending")
+    )
+    if portal:
+        stmt = stmt.where(ZonapropSegment.portal == portal)
+    stmt = stmt.group_by(ZonapropSegmentScanQueue.priority)
+    result = await session.execute(stmt)
+    return {(row.priority or "unset"): row.n for row in result}
 
 
 async def mark_failed(session: AsyncSession, run_id: int, error: str) -> None:

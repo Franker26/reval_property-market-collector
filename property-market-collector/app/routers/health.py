@@ -48,6 +48,8 @@ async def discovery_health():
         if last_url_disc is None:
             last_url_disc = await runs_repo.get_last_completed(session, run_type="url_discovery")
         last_incr_mon = await runs_repo.get_last_completed(session, run_type="incremental_monitor")
+        last_refresh_mon = await runs_repo.get_last_completed(session, run_type="refresh_monitor")
+        priority_counts = await seg_run_repo.count_by_priority(session)
 
         # Progreso en vivo de segment_discovery: cuántos market_segments se crearon
         seg_disc_result = await session.execute(
@@ -136,6 +138,7 @@ async def discovery_health():
             "segment_discovery": _run_brief(last_seg_disc),
             "url_discovery": _run_brief(last_url_disc),
             "incremental_monitor": _run_brief(last_incr_mon),
+            "refresh_monitor": _run_brief(last_refresh_mon),
         },
         "segment_discovery": {
             "segments_total": int(sd.total or 0),
@@ -150,6 +153,7 @@ async def discovery_health():
             "total": total_segments,
             "progress_pct": progress_pct,
         },
+        "pending_by_priority": priority_counts,
         "scheduler": scheduler_jobs,
         "rate_limiters": get_all_limiter_states(),
         "recent_errors": {

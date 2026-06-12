@@ -4,6 +4,7 @@ Cada función crea un collection_run para trazabilidad.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from datetime import datetime, timezone
@@ -22,6 +23,9 @@ log = logging.getLogger(__name__)
 
 _ALERT_ERROR_RATE_THRESHOLD = int(os.getenv("ALERT_ERROR_RATE_THRESHOLD", "10"))
 _ALERT_CONSECUTIVE_4XX_THRESHOLD = int(os.getenv("ALERT_CONSECUTIVE_4XX_THRESHOLD", "3"))
+
+# Intervalo de re-consulta de la cola cuando la ventana está idle (sin pendientes).
+_WINDOW_IDLE_POLL_SECONDS = int(os.getenv("URL_DISCOVERY_IDLE_POLL_SECONDS", "60"))
 
 # ── Cancellation ──────────────────────────────────────────────────────────────
 
@@ -239,26 +243,15 @@ async def run_url_discovery_window(
     if stale > 0:
         log.info("url_discovery_window: %d runs colgados → pending", stale)
 
-    async with factory() as session:
-        pending = await run_repo.get_pending(session, portal)
-
-    if not pending:
-        log.info("url_discovery_window: no hay segmentos pendientes")
-        return {"status": "idle", "processed": 0, "complete": 0}
-
-    log.info(
-        "url_discovery_window: %d segmentos pendientes — stop_at=%s",
-        len(pending), stop_at.strftime("%H:%M %Z"),
-    )
-
-    # Crear collection_run para trazabilidad
+    # Crear collection_run para trazabilidad. La ventana permanece abierta hasta
+    # stop_at y re-consulta la cola, de modo que consume lo que se encole DURANTE
+    # la ventana (p.ej. refresh_monitor), no solo el snapshot inicial de pendientes.
     async with factory() as session:
         col_run = await runs_repo.start(
             session,
             run_type="url_discovery_window",
             source_id=source_id,
-            params={"portal": portal, "pending_segments": len(pending),
-                    "stop_at": stop_at.isoformat(), "mode": mode},
+            params={"portal": portal, "stop_at": stop_at.isoformat(), "mode": mode},
             mode=mode,
         )
         await session.commit()
@@ -270,21 +263,17 @@ async def run_url_discovery_window(
     await dispatch(
         "run_started", "warning",
         f"url_discovery_window iniciado para {portal}",
-        {"run_id": col_run_id, "portal": portal, "pending_segments": len(pending),
+        {"run_id": col_run_id, "portal": portal,
          "stop_at": stop_at.strftime("%H:%M %Z"), "mode": mode},
     )
 
     stats: dict = {"processed": 0, "complete": 0, "stopped_early": 0, "failed": 0}
     window_error_count = 0
+    stop_at_utc = stop_at.astimezone(timezone.utc)
 
-    for run in pending:
-        if is_cancel_requested("url_discovery"):
-            log.info("url_discovery_window: cancelación solicitada — deteniendo")
-            break
-        if datetime.now(timezone.utc) >= stop_at.astimezone(timezone.utc):
-            log.info("url_discovery_window: ventana horaria alcanzada — deteniendo")
-            break
-
+    async def process_segment(run) -> str:
+        """Procesa un segmento completo. Devuelve 'complete' | 'stopped_early' | 'failed'."""
+        nonlocal window_error_count
         async with factory() as session:
             async with session.begin():
                 await run_repo.mark_started(session, run.id)
@@ -370,36 +359,79 @@ async def run_url_discovery_window(
                 async with factory() as session:
                     async with session.begin():
                         await run_repo.mark_pending(session, run.id)
-                stats["stopped_early"] += 1
                 log.info(
                     "url_discovery_window: segmento %d detenido antes de completar — devuelto a pending",
                     run.segment_id,
                 )
-                break
-            else:
-                async with factory() as session:
-                    async with session.begin():
-                        await run_repo.mark_complete(
-                            session, run.id,
-                            pages_scanned=pages_ok,
-                            listings_found=total_found,
-                            new_count=new_count,
-                            changed_count=changed_count,
-                            **seg_metrics,
-                        )
-                stats["complete"] += 1
-                log.info(
-                    "url_discovery_window: segmento %d completo — %d publicaciones (%d páginas)",
-                    run.segment_id, total_found, pages_ok,
-                )
+                return "stopped_early"
+            async with factory() as session:
+                async with session.begin():
+                    await run_repo.mark_complete(
+                        session, run.id,
+                        pages_scanned=pages_ok,
+                        listings_found=total_found,
+                        new_count=new_count,
+                        changed_count=changed_count,
+                        **seg_metrics,
+                    )
+            log.info(
+                "url_discovery_window: segmento %d completo — %d publicaciones (%d páginas)",
+                run.segment_id, total_found, pages_ok,
+            )
+            return "complete"
         except Exception as exc:
             log.error("url_discovery_window: error en segmento %d — %s", run.segment_id, exc)
             async with factory() as session:
                 async with session.begin():
                     await run_repo.mark_failed(session, run.id, str(exc))
-            stats["failed"] += 1
+            return "failed"
 
-        stats["processed"] += 1
+    # Bucle de ventana: consume la cola y re-consulta hasta stop_at, idleando
+    # cuando no hay pendientes para captar lo que se encole intra-ventana.
+    window_stopped = False
+    while not window_stopped:
+        if is_cancel_requested("url_discovery"):
+            log.info("url_discovery_window: cancelación solicitada — deteniendo")
+            break
+        if datetime.now(timezone.utc) >= stop_at_utc:
+            log.info("url_discovery_window: ventana horaria alcanzada — deteniendo")
+            break
+
+        async with factory() as session:
+            pending = await run_repo.get_pending(session, portal)
+
+        if not pending:
+            remaining = (stop_at_utc - datetime.now(timezone.utc)).total_seconds()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(_WINDOW_IDLE_POLL_SECONDS, remaining))
+            continue
+
+        log.info(
+            "url_discovery_window: %d segmentos pendientes — stop_at=%s",
+            len(pending), stop_at.strftime("%H:%M %Z"),
+        )
+
+        for run in pending:
+            if is_cancel_requested("url_discovery"):
+                log.info("url_discovery_window: cancelación solicitada — deteniendo")
+                window_stopped = True
+                break
+            if datetime.now(timezone.utc) >= stop_at_utc:
+                log.info("url_discovery_window: ventana horaria alcanzada — deteniendo")
+                window_stopped = True
+                break
+
+            result = await process_segment(run)
+            stats["processed"] += 1
+            if result == "complete":
+                stats["complete"] += 1
+            elif result == "stopped_early":
+                stats["stopped_early"] += 1
+                window_stopped = True  # backoff: cortar ventana ante fallo de página
+                break
+            elif result == "failed":
+                stats["failed"] += 1
 
     stop_level = _cancel_flags.get("url_discovery", 0)
     if stop_level >= 2:
@@ -514,5 +546,79 @@ async def run_incremental_monitor(
     log.info(
         "discovery_service: incremental_monitor run_id=%d status=%s checked=%d found=%d written=%d",
         run_id, final_status, agg.get("segments_checked", 0), agg.get("listings_found", 0), total_written,
+    )
+    return {"run_id": run_id, "status": final_status, **stats}
+
+
+# ── Refresh Monitor: reencola segmentos completos por volatilidad + volumen ────
+
+
+async def run_refresh_monitor(
+    portal: str = "zonaprop",
+    source_code: str = "zonaprop",
+    mode: str = "manual",
+) -> dict:
+    """
+    Reencola en la scan_queue las hojas activas 'complete' vencidas según su tier
+    (hot/warm/cold), priorizando volatilidad histórica + volumen. No escanea: solo
+    decide qué volver a poner en 'pending' para que url_discovery lo reprocese.
+    """
+    from app.core.config import get_refresh_config
+
+    cfg = get_refresh_config()
+    factory = get_async_session_factory()
+
+    async with factory() as session:
+        source = await sources_repo.get_by_code(session, source_code)
+        if source is None:
+            return {"error": f"source '{source_code}' not found"}
+        source_id = source.id
+        run = await runs_repo.start(
+            session,
+            run_type="refresh_monitor",
+            source_id=source_id,
+            params={
+                "portal": portal,
+                "mode": mode,
+                "max_segments_per_cycle": cfg.max_segments_per_cycle,
+                "gap_hours": {"hot": cfg.gap_hours_hot, "warm": cfg.gap_hours_warm, "cold": cfg.gap_hours_cold},
+            },
+            mode=mode,
+        )
+        await session.commit()
+        run_id = run.id
+
+    items: list[dict] = []
+    enq: dict = {"enqueued": 0, "by_tier": {}}
+    try:
+        async with factory() as session:
+            async with session.begin():
+                items = await seg_repo.select_segments_due_for_refresh(session, portal, cfg)
+                enq = await run_repo.enqueue_refresh(session, items)
+        final_status = "success"
+    except Exception as exc:
+        log.error("discovery_service: refresh_monitor falló — %s", exc)
+        final_status = "failed"
+        from app.core.alerts import dispatch
+        await dispatch(
+            "run_failed", "critical",
+            f"refresh_monitor falló: {exc}",
+            {"run_id": run_id, "portal": portal},
+        )
+
+    enqueued = enq.get("enqueued", 0)
+    stats = {
+        "selected": len(items),
+        "enqueued": enqueued,
+        "skipped": len(items) - enqueued,
+        "by_tier": enq.get("by_tier", {}),
+    }
+    async with factory() as session:
+        await runs_repo.finish(session, run_id, status=final_status, stats=stats)
+        await session.commit()
+
+    log.info(
+        "discovery_service: refresh_monitor run_id=%d status=%s selected=%d enqueued=%d by_tier=%s",
+        run_id, final_status, len(items), enqueued, enq.get("by_tier", {}),
     )
     return {"run_id": run_id, "status": final_status, **stats}
