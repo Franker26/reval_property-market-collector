@@ -14,10 +14,12 @@ _STALE_AFTER_HOURS = 6
 _MAX_ATTEMPTS = 3
 
 # Orden de consumo: estructural > refresh hot > nuevos/normales > refresh warm > refresh cold > resto
+# NULL priority = segmento nuevo sin prioridad explícita → se consume como 'normal' (rank 3)
 _PRIORITY_RANK = case(
     (ZonapropSegmentScanQueue.priority == "high", 1),
     (ZonapropSegmentScanQueue.priority == "refresh_hot", 2),
     (ZonapropSegmentScanQueue.priority == "normal", 3),
+    (ZonapropSegmentScanQueue.priority.is_(None), 3),
     (ZonapropSegmentScanQueue.priority == "refresh_warm", 4),
     (ZonapropSegmentScanQueue.priority == "refresh_cold", 5),
     else_=6,

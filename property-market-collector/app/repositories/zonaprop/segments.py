@@ -342,7 +342,7 @@ async def select_segments_due_for_refresh(
     for row in snap_rows:
         counts_by_seg.setdefault(row.segment_id, []).append(int(row.total_count or 0))
 
-    # 2) Hojas activas con entrada de cola en 'complete'
+    # 2) Hojas activas con entrada de cola en 'complete' — incluye priority para detectar primer ciclo
     seg_stmt = (
         select(
             ZonapropSegment.id.label("segment_id"),
@@ -350,6 +350,7 @@ async def select_segments_due_for_refresh(
             ZonapropSegmentScanQueue.completed_at.label("completed_at"),
             ZonapropSegmentScanQueue.updated_at.label("updated_at"),
             ZonapropSegmentScanQueue.created_at.label("created_at"),
+            ZonapropSegmentScanQueue.priority.label("queue_priority"),
         )
         .join(ZonapropSegmentScanQueue, ZonapropSegmentScanQueue.segment_id == ZonapropSegment.id)
         .where(
@@ -389,7 +390,14 @@ async def select_segments_due_for_refresh(
 
         if age_hours < cfg.min_age_hours:   # guard anti-loop
             continue
-        if age_hours <= gap_hours:          # no vencido
+
+        # Segmentos que nunca pasaron por un ciclo de refresh (priority no es 'refresh_*'):
+        # se incluyen si superan min_age_hours, independientemente del gap del tier.
+        # El overdue_ratio sigue usando gap_hours del tier para que el sort sea justo.
+        is_first_refresh = not (row.queue_priority or "").startswith("refresh_")
+        effective_gap = cfg.min_age_hours if is_first_refresh else gap_hours
+
+        if age_hours <= effective_gap:      # no vencido
             continue
 
         candidates.append({
@@ -400,17 +408,21 @@ async def select_segments_due_for_refresh(
             "gap_hours": gap_hours,
             "volatility": round(volatility, 4),
             "total_count": total_count,
+            "is_first_refresh": is_first_refresh,
             "overdue_ratio": age_hours / gap_hours if gap_hours > 0 else age_hours,
         })
 
     candidates.sort(key=lambda c: (c["overdue_ratio"], c["score"]), reverse=True)
     selected = candidates[: cfg.max_segments_per_cycle]
 
+    first_refresh_count = sum(1 for c in selected if c["is_first_refresh"])
     log.info(
-        "select_segments_due_for_refresh: evaluados=%d vencidos=%d seleccionados=%d (cupo=%d) hot=%d warm=%d cold=%d",
+        "select_segments_due_for_refresh: evaluados=%d vencidos=%d seleccionados=%d (cupo=%d)"
+        " hot=%d warm=%d cold=%d primer_refresh=%d",
         len(seg_rows), len(candidates), len(selected), cfg.max_segments_per_cycle,
         sum(1 for c in selected if c["tier"] == "hot"),
         sum(1 for c in selected if c["tier"] == "warm"),
         sum(1 for c in selected if c["tier"] == "cold"),
+        first_refresh_count,
     )
     return selected
