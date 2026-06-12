@@ -2,6 +2,12 @@
 """
 jobs/zonaprop_incremental_monitor.py
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+DEPRECATED (Etapa B): su criterio (delta de total_count) está cubierto por
+invalidate_changed_segments_after_discovery (invalidación estructural) + el
+refresh rotativo por churn observado (refresh_monitor). Se conserva solo como
+herramienta manual; NO schedular — dos jobs no deben reencolar segmentos con
+criterios contradictorios. Candidato a eliminación futura si se confirma sin uso.
+
 Monitoreo incremental diario de segmentos de mercado Zonaprop.
 
 Para cada segmento hoja activo:

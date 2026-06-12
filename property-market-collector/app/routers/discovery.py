@@ -168,7 +168,8 @@ async def trigger_incremental_monitor(
     body: MonitorRequest,
     background_tasks: BackgroundTasks,
 ):
-    """Monitoreo incremental: compara counts y rescanea segmentos que cambiaron."""
+    """DEPRECATED (Etapa B): criterio cubierto por invalidación estructural + refresh por churn.
+    Solo para uso manual puntual; no automatizar."""
     background_tasks.add_task(_bg_incremental_monitor, body.operation_key, body.location_key)
     return {
         "status": "started",

@@ -94,9 +94,10 @@ jobs/                            ← Scripts standalone para operaciones batch
 
 | Tabla | Propósito |
 |---|---|
-| `zonaprop_segments` | Árbol adaptativo precio × superficie |
+| `zonaprop_segments` | Árbol adaptativo precio × superficie + churn observado (Etapa B) |
 | `zonaprop_segment_snapshots` | Historial de total_count por segmento |
-| `zonaprop_segment_scan_queue` | Cola de escaneo de URLs por segmento |
+| `zonaprop_segment_scan_queue` | Cola de escaneo de URLs por segmento (una fila por segmento, se sobreescribe) |
+| `zonaprop_segment_scan_history` | Append-only: un registro por scan completado — auditoría, calibración del refresh, estado de batches de full scan, dataset ML futuro |
 
 **Capa analítica:**
 
@@ -125,19 +126,59 @@ Construye el árbol adaptativo precio × superficie por cada combinación operac
 
 **Al finalizar**:
 1. `sync_pending_scan_queue` → inserta entradas faltantes en la cola.
-2. `invalidate_changed_segments_after_discovery` → reinvalida entradas `complete` a `pending` si el total_count cambió significativamente.
+2. `inherit_churn_from_parents` → hojas nuevas de split heredan un prior débil de churn del segmento histórico que las contiene (por contención de boundaries; los nodos intermedios no se persisten). El prior nunca habilita score v2 por sí solo: solo inicializa el EWMA al llegar churn propio.
+3. `invalidate_changed_segments_after_discovery` → reinvalida entradas `complete` a `pending` si el total_count cambió significativamente (invalidación estructural; priorities `high`/`normal`, complementaria al refresh).
 
 ### Fase 2 — url_discovery_window (L-V 06:00-18:30 AR, domingos 10:00-16:00 AR)
 
-Consume `zonaprop_segment_scan_queue` en estado `pending`.
+Consume `zonaprop_segment_scan_queue` en estado `pending`, por prioridad:
+
+```
+high > refresh_hot > full_scan_compare > full_scan_baseline > normal > refresh_unknown > refresh_warm > refresh_cold
+```
 
 - **Resumable**: runs colgados (>6h) se devuelven a `pending` al inicio de cada ventana.
 - **Ciclo por segmento**: `pending` → `running` → `complete` | `failed` (máx 3 intentos).
 - **Persist callback**: por cada página, upsert batch en `listing_entities` + `listing_snapshots`.
+- **Al completar cada segmento**: registra churn observado (`_record_scan_outcome`) e inserta una fila en `zonaprop_segment_scan_history` (auditoría, calibración, dataset ML futuro).
 
-### Fase 3 — incremental_monitor (bajo demanda)
+### Refresh rotativo (Etapa B — churn observado)
+
+`refresh_monitor` (schedulado) reencola hojas `complete` vencidas. Principio rector: **el score decide urgencia, nunca si se refresca** — todo segmento tiene un gap máximo de frescura definido por negocio.
+
+**Señales del score v2** (`select_segments_due_for_refresh`):
+
+```
+churn_norm = min(churn_ewma / REFRESH_CHURN_CAP, 1.0)
+score = 0.50·churn_norm + 0.25·count_volatility_norm + 0.25·volume_norm
+```
+
+- **Churn observado (principal)**: en cada scan comparable, `churn_raw = (new+changed)/found`, normalizado a diario (`/ días desde el scan anterior`, piso 0.5d, clamp 1.0) y suavizado por EWMA (`alpha=0.5`). Guards: scan vacío o primer scan histórico no alimentan churn.
+- **count_volatility (secundaria)**: delta de total_count entre snapshots semanales — era la señal principal de Etapa A; no detecta rotación interna con count estable.
+- **Volumen (secundaria)**: total_count normalizado.
+
+**Tiers / gaps máximos de negocio**: hot 24h · warm 72h · cold 168h (máximo tolerable, no abandono) · **unknown 72h** (segmentos con `churn_samples_count < REFRESH_MIN_CHURN_SAMPLES`: la falta de evidencia nunca manda a cold). La única salida de `unknown` es acumular muestras propias — nunca `churn_ewma IS NOT NULL` (puede ser prior heredado).
+
+**Presupuesto antibot**: corte por páginas estimadas (`REFRESH_MAX_PAGES_PER_CYCLE`, `ceil(total_count/REFRESH_POSTINGS_PER_PAGE)`) con `REFRESH_MAX_SEGMENTS_PER_CYCLE` como tope secundario; candidatos que no entran se saltan (`skipped_budget_oversized`) sin romper el ciclo.
+
+**Trazabilidad**: `priority` = orden operativo; `reason` = decisión reconstruible (`refresh:<tier>;age_hours=…;score=…;churn_ewma=…;count_volatility=…`).
+
+*Mejora futura documentada*: anti-starvation de `refresh_unknown` (elevarlo sobre `normal` o reservarle cupo si acumula atraso > su gap). *ML futuro*: `zonaprop_segment_scan_history` es el dataset; un modelo solo ordenaría urgencias dentro del presupuesto, nunca reemplazaría los gaps de negocio.
+
+### Salida en vivo — full scan baseline + compare
+
+`jobs/zonaprop_full_scan.py --mode baseline|compare --batch-id <id>` construye el baseline de churn del parque (post-migración todos los segmentos arrancan `unknown`). Doble gate: `FULL_SCAN_ENABLED=true` + batch_id explícito.
+
+1. **baseline** (`full_scan_baseline`): reencola hojas activas refreshables; pasa por `mark_complete` (deja `completed_at` como referencia temporal) pero **no** alimenta `churn_ewma`.
+2. **compare** (`full_scan_compare`): segundo ciclo; usa el `completed_at` del baseline → primer churn diario válido de todo el parque.
+
+Idempotente y reanudable: el estado durable del batch vive en `scan_history` (universo restante = elegibles − procesados del batch − en vuelo); respeta `FULL_SCAN_MAX_PAGES_PER_CYCLE` por ejecución — correr repetidamente hasta `remaining=0`.
+
+### Fase 3 — incremental_monitor (bajo demanda) — DEPRECATED
 
 Consulta el total_count actual de cada segmento activo y lo compara con el snapshot anterior. Rescanea los que cambiaron sin reconstruir el árbol.
+
+**Deprecated desde Etapa B**: su criterio (delta de total_count) está cubierto por `invalidate_changed_segments_after_discovery` (estructural) + el refresh rotativo (churn). Se mantiene solo como herramienta manual; no schedularlo — dos jobs no deben reencolar con criterios contradictorios. Candidato a eliminación futura si se confirma sin uso.
 
 ---
 

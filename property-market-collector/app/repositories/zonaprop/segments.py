@@ -1,15 +1,21 @@
-"""Repositorio para zonaprop_segments y zonaprop_segment_snapshots."""
+"""Repositorio para zonaprop_segments, snapshots, churn y scan history."""
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import func
 
-from app.db.models import ZonapropSegment, ZonapropSegmentSnapshot, ZonapropSegmentScanQueue
+from app.db.models import (
+    ZonapropSegment,
+    ZonapropSegmentScanHistory,
+    ZonapropSegmentSnapshot,
+    ZonapropSegmentScanQueue,
+)
 
 import logging
 
@@ -305,10 +311,17 @@ async def select_segments_due_for_refresh(
     """
     Selecciona hojas activas en estado 'complete' vencidas según su tier, para reencolar.
 
-    Hoja activa = is_leaf + status active + total_count > 0 + no oversized.
-    El score combina volatilidad histórica (snapshots) y volumen (total_count) →
-    tier (hot/warm/cold) → gap objetivo. Vencido si age_hours > gap, con guard de edad
-    mínima anti-loop. Ordena por más vencido (overdue ratio) y luego mayor score; aplica cupo.
+    Score v2 (Etapa B): churn observado (EWMA diario, señal principal) + volatilidad
+    de total_count (count_volatility, secundaria) + volumen (secundaria) → tier
+    hot/warm/cold → gap máximo de frescura por negocio. Segmentos sin muestras de
+    churn suficientes (churn_samples_count < min_churn_samples) van a tier 'unknown'
+    con gap propio: la falta de evidencia nunca los manda a cold.
+
+    El score decide urgencia (orden de reencolado), no si se refresca: todo segmento
+    vencido es candidato. Corta por presupuesto de páginas estimadas
+    (max_pages_per_cycle) con max_segments_per_cycle como tope secundario; los
+    candidatos que no entran en el presupuesto se saltan sin romper el ciclo
+    (log skipped_budget_oversized).
     """
     now = datetime.now(timezone.utc)
 
@@ -342,15 +355,16 @@ async def select_segments_due_for_refresh(
     for row in snap_rows:
         counts_by_seg.setdefault(row.segment_id, []).append(int(row.total_count or 0))
 
-    # 2) Hojas activas con entrada de cola en 'complete' — incluye priority para detectar primer ciclo
+    # 2) Hojas activas con entrada de cola en 'complete', con sus señales de churn
     seg_stmt = (
         select(
             ZonapropSegment.id.label("segment_id"),
             ZonapropSegment.total_count.label("total_count"),
+            ZonapropSegment.churn_ewma.label("churn_ewma"),
+            ZonapropSegment.churn_samples_count.label("churn_samples_count"),
             ZonapropSegmentScanQueue.completed_at.label("completed_at"),
             ZonapropSegmentScanQueue.updated_at.label("updated_at"),
             ZonapropSegmentScanQueue.created_at.label("created_at"),
-            ZonapropSegmentScanQueue.priority.label("queue_priority"),
         )
         .join(ZonapropSegmentScanQueue, ZonapropSegmentScanQueue.segment_id == ZonapropSegment.id)
         .where(
@@ -367,12 +381,23 @@ async def select_segments_due_for_refresh(
     candidates: list[dict] = []
     for row in seg_rows:
         total_count = int(row.total_count or 0)
-        volatility = _compute_volatility(counts_by_seg.get(row.segment_id, []))
-        v_norm = min(volatility / cfg.volatility_cap, 1.0) if cfg.volatility_cap > 0 else 0.0
-        s_norm = min(total_count / cfg.volume_norm_divisor, 1.0) if cfg.volume_norm_divisor > 0 else 0.0
-        score = cfg.weight_volatility * v_norm + cfg.weight_volume * s_norm
+        churn_samples = int(row.churn_samples_count or 0)
+        count_volatility = _compute_volatility(counts_by_seg.get(row.segment_id, []))
 
-        if score >= cfg.hot_score_threshold:
+        # La salida de 'unknown' depende SOLO de las muestras, nunca de
+        # churn_ewma IS NOT NULL (puede ser un prior heredado de un split).
+        has_churn_evidence = churn_samples >= cfg.min_churn_samples
+
+        churn_norm = 0.0
+        if has_churn_evidence and row.churn_ewma is not None and cfg.churn_cap > 0:
+            churn_norm = min(float(row.churn_ewma) / cfg.churn_cap, 1.0)
+        v_norm = min(count_volatility / cfg.volatility_cap, 1.0) if cfg.volatility_cap > 0 else 0.0
+        s_norm = min(total_count / cfg.volume_norm_divisor, 1.0) if cfg.volume_norm_divisor > 0 else 0.0
+        score = cfg.weight_churn * churn_norm + cfg.weight_volatility * v_norm + cfg.weight_volume * s_norm
+
+        if not has_churn_evidence:
+            tier = "unknown"
+        elif score >= cfg.hot_score_threshold:
             tier = "hot"
         elif score >= cfg.warm_score_threshold or total_count >= cfg.high_volume_threshold:
             tier = "warm"
@@ -390,39 +415,224 @@ async def select_segments_due_for_refresh(
 
         if age_hours < cfg.min_age_hours:   # guard anti-loop
             continue
-
-        # Segmentos que nunca pasaron por un ciclo de refresh (priority no es 'refresh_*'):
-        # se incluyen si superan min_age_hours, independientemente del gap del tier.
-        # El overdue_ratio sigue usando gap_hours del tier para que el sort sea justo.
-        is_first_refresh = not (row.queue_priority or "").startswith("refresh_")
-        effective_gap = cfg.min_age_hours if is_first_refresh else gap_hours
-
-        if age_hours <= effective_gap:      # no vencido
+        if age_hours <= gap_hours:          # no vencido
             continue
 
+        postings_per_page = max(int(cfg.postings_per_page), 1)
         candidates.append({
             "segment_id": row.segment_id,
             "tier": tier,
             "score": round(score, 4),
             "age_hours": round(age_hours, 1),
             "gap_hours": gap_hours,
-            "volatility": round(volatility, 4),
+            "churn_ewma": round(float(row.churn_ewma), 4) if row.churn_ewma is not None else None,
+            "churn_samples": churn_samples,
+            "count_volatility": round(count_volatility, 4),
             "total_count": total_count,
-            "is_first_refresh": is_first_refresh,
+            "estimated_pages": max(math.ceil(total_count / postings_per_page), 1),
             "overdue_ratio": age_hours / gap_hours if gap_hours > 0 else age_hours,
         })
 
     candidates.sort(key=lambda c: (c["overdue_ratio"], c["score"]), reverse=True)
-    selected = candidates[: cfg.max_segments_per_cycle]
 
-    first_refresh_count = sum(1 for c in selected if c["is_first_refresh"])
+    # Cupo: presupuesto de páginas estimadas (principal) + cantidad de segmentos
+    # (tope secundario). Un candidato que no entra se salta sin romper la selección.
+    selected: list[dict] = []
+    pages_used = 0
+    skipped_budget = 0
+    for cand in candidates:
+        if len(selected) >= cfg.max_segments_per_cycle:
+            break
+        if pages_used + cand["estimated_pages"] > cfg.max_pages_per_cycle:
+            skipped_budget += 1
+            log.info(
+                "select_segments_due_for_refresh: skipped_budget_oversized seg_id=%d"
+                " estimated_pages=%d pages_used=%d budget=%d",
+                cand["segment_id"], cand["estimated_pages"], pages_used, cfg.max_pages_per_cycle,
+            )
+            continue
+        pages_used += cand["estimated_pages"]
+        selected.append(cand)
+
     log.info(
-        "select_segments_due_for_refresh: evaluados=%d vencidos=%d seleccionados=%d (cupo=%d)"
-        " hot=%d warm=%d cold=%d primer_refresh=%d",
-        len(seg_rows), len(candidates), len(selected), cfg.max_segments_per_cycle,
+        "select_segments_due_for_refresh: evaluados=%d vencidos=%d seleccionados=%d"
+        " (cupo_segmentos=%d cupo_paginas=%d paginas_usadas=%d skipped_budget=%d)"
+        " hot=%d warm=%d cold=%d unknown=%d",
+        len(seg_rows), len(candidates), len(selected),
+        cfg.max_segments_per_cycle, cfg.max_pages_per_cycle, pages_used, skipped_budget,
         sum(1 for c in selected if c["tier"] == "hot"),
         sum(1 for c in selected if c["tier"] == "warm"),
         sum(1 for c in selected if c["tier"] == "cold"),
-        first_refresh_count,
+        sum(1 for c in selected if c["tier"] == "unknown"),
     )
     return selected
+
+
+# ── Churn observado (Etapa B) ─────────────────────────────────────────────────
+
+
+def compute_churn_daily(
+    new_count: int,
+    changed_count: int,
+    listings_found: int,
+    elapsed_days: float,
+    min_elapsed_days: float = 0.5,
+) -> Optional[float]:
+    """
+    Churn diario normalizado de un scan comparable.
+
+    churn_raw = (new + changed) / found, dividido por los días desde el scan
+    anterior (piso min_elapsed_days contra rescans inmediatos) y clampeado a 1.0.
+    Devuelve None si listings_found == 0 (scan vacío no es evidencia de churn 0).
+    """
+    if listings_found <= 0:
+        return None
+    churn_raw = (new_count + changed_count) / listings_found
+    churn_daily = churn_raw / max(elapsed_days, min_elapsed_days)
+    return min(churn_daily, 1.0)
+
+
+def blend_churn_ewma(churn_daily: float, ewma_prev: Optional[float], alpha: float) -> float:
+    """EWMA del churn diario. Sin valor previo (ni heredado), el primer valor es el churn."""
+    if ewma_prev is None:
+        return churn_daily
+    return alpha * churn_daily + (1.0 - alpha) * ewma_prev
+
+
+async def update_churn_ewma(
+    session: AsyncSession,
+    segment_id: int,
+    churn_daily: float,
+    alpha: float,
+) -> dict:
+    """
+    Registra una observación de churn diario en el segmento: actualiza churn_last,
+    mezcla churn_ewma (un prior heredado de split participa como ewma_prev) e
+    incrementa churn_samples_count. Devuelve los valores resultantes.
+    """
+    seg = await session.get(ZonapropSegment, segment_id)
+    if seg is None:
+        return {}
+    ewma_prev = float(seg.churn_ewma) if seg.churn_ewma is not None else None
+    new_ewma = blend_churn_ewma(churn_daily, ewma_prev, alpha)
+    now = datetime.now(timezone.utc)
+
+    seg.churn_last = churn_daily
+    seg.churn_ewma = new_ewma
+    seg.churn_samples_count = (seg.churn_samples_count or 0) + 1
+    seg.last_churn_observed_at = now
+    await session.flush()
+    return {
+        "churn_ewma": new_ewma,
+        "churn_samples_count": seg.churn_samples_count,
+    }
+
+
+_INHERIT_CHURN_SQL = text("""
+    WITH donors AS (
+        SELECT child.id AS child_id,
+               donor.id AS donor_id,
+               donor.churn_ewma AS churn_ewma,
+               donor.churn_samples_count AS churn_samples_count,
+               donor.last_churn_observed_at AS last_churn_observed_at
+        FROM zonaprop_segments child
+        JOIN LATERAL (
+            SELECT p.id, p.churn_ewma, p.churn_samples_count, p.last_churn_observed_at
+            FROM zonaprop_segments p
+            WHERE p.portal = child.portal
+              AND p.operation_key = child.operation_key
+              AND p.province_key = child.province_key
+              AND p.id <> child.id
+              AND p.churn_ewma IS NOT NULL
+              AND p.price_min <= child.price_min AND p.price_max >= child.price_max
+              AND p.surface_min <= child.surface_min AND p.surface_max >= child.surface_max
+            ORDER BY (p.price_max - p.price_min) * (p.surface_max - p.surface_min) ASC, p.id
+            LIMIT 1
+        ) donor ON true
+        WHERE child.portal = :portal
+          AND child.is_leaf = true
+          AND child.status = 'active'
+          AND child.churn_ewma IS NULL
+          AND child.churn_samples_count = 0
+    )
+    UPDATE zonaprop_segments c
+    SET churn_ewma = d.churn_ewma,
+        last_churn_observed_at = d.last_churn_observed_at,
+        churn_samples_count = LEAST(d.churn_samples_count, :samples_cap),
+        updated_at = now()
+    FROM donors d
+    WHERE c.id = d.child_id
+    RETURNING c.id AS child_id, d.donor_id AS parent_id
+""")
+
+
+async def inherit_churn_from_parents(
+    session: AsyncSession,
+    portal: str,
+    samples_cap: int,
+) -> list[dict]:
+    """
+    Prior débil para hijos de split: hojas activas sin evidencia propia
+    (churn_ewma NULL y 0 muestras) heredan el churn del segmento histórico más
+    chico que las contiene (mismo portal/operación/provincia, boundaries
+    contenedores). parent_id no sirve acá: los nodos intermedios del árbol nunca
+    se persisten, así que el "padre" se resuelve por contención geométrica.
+
+    Idempotente: la condición churn IS NULL garantiza que nunca pisa evidencia
+    propia ni una herencia previa. El cap de muestras (= min_samples − 1) asegura
+    que el prior no habilita score v2 por sí solo: el hijo sigue 'unknown' hasta
+    tener churn propio, y el prior solo inicializa el EWMA en esa primera mezcla.
+    """
+    result = await session.execute(
+        _INHERIT_CHURN_SQL, {"portal": portal, "samples_cap": samples_cap}
+    )
+    rows = [{"child_id": r.child_id, "parent_id": r.parent_id} for r in result]
+    for r in rows:
+        log.info(
+            "inherit_churn_from_parents: child=%d <- parent=%d (prior débil, cap=%d)",
+            r["child_id"], r["parent_id"], samples_cap,
+        )
+    return rows
+
+
+# ── Scan history (auditoría + calibración + dataset ML) ───────────────────────
+
+
+async def get_last_history_total_count(
+    session: AsyncSession,
+    segment_id: int,
+) -> Optional[int]:
+    """total_count del último scan registrado en history, para delta_total_count."""
+    stmt = (
+        select(ZonapropSegmentScanHistory.total_count)
+        .where(ZonapropSegmentScanHistory.segment_id == segment_id)
+        .order_by(ZonapropSegmentScanHistory.scanned_at.desc())
+        .limit(1)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def record_scan_history(session: AsyncSession, **fields) -> None:
+    """Inserta una fila append-only en zonaprop_segment_scan_history."""
+    session.add(ZonapropSegmentScanHistory(**fields))
+    await session.flush()
+
+
+async def count_history_for_batch(
+    session: AsyncSession,
+    batch_id: str,
+    priority: str,
+) -> set[int]:
+    """
+    segment_ids ya procesados para un batch de full scan (batch_id + priority).
+    Es el estado durable del batch: scan_queue se sobreescribe por ciclo.
+    """
+    stmt = (
+        select(ZonapropSegmentScanHistory.segment_id)
+        .where(
+            ZonapropSegmentScanHistory.batch_id == batch_id,
+            ZonapropSegmentScanHistory.priority == priority,
+        )
+        .distinct()
+    )
+    return {row[0] for row in (await session.execute(stmt)).all()}

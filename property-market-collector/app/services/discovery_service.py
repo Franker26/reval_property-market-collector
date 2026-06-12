@@ -27,6 +27,123 @@ _ALERT_CONSECUTIVE_4XX_THRESHOLD = int(os.getenv("ALERT_CONSECUTIVE_4XX_THRESHOL
 # Intervalo de re-consulta de la cola cuando la ventana está idle (sin pendientes).
 _WINDOW_IDLE_POLL_SECONDS = int(os.getenv("URL_DISCOVERY_IDLE_POLL_SECONDS", "60"))
 
+
+def _parse_batch_id(reason: Optional[str]) -> Optional[str]:
+    """Extrae batch_id=<...> del reason de la cola (full scan)."""
+    if not reason:
+        return None
+    for part in reason.split(";"):
+        if part.startswith("batch_id="):
+            return part.split("=", 1)[1] or None
+    return None
+
+
+def _tier_from_priority(priority: Optional[str]) -> Optional[str]:
+    if priority and priority.startswith("refresh_"):
+        return priority.removeprefix("refresh_")
+    return None
+
+
+async def _record_scan_outcome(
+    factory,
+    segment,
+    queue_priority: Optional[str],
+    queue_reason: Optional[str],
+    prev_completed_at: Optional[datetime],
+    listings_found: int,
+    new_count: int,
+    changed_count: int,
+) -> None:
+    """
+    Post-proceso de un scan de segmento completado: actualiza el churn EWMA del
+    segmento (si el scan es comparable) e inserta la fila append-only en
+    zonaprop_segment_scan_history.
+
+    Guards de churn (registra history igual, pero sin alimentar EWMA):
+      - listings_found == 0: scan vacío/ambiguo, no es evidencia de churn 0;
+      - prev_completed_at NULL: primer scan histórico, todo aparece como new_count;
+      - priority full_scan_baseline: el baseline construye la base comparable —
+        pasa por mark_complete (deja completed_at para el compare) pero los scans
+        previos a Etapa B no se consideran base comparable.
+
+    Nunca debe romper el scan: errores acá se loguean y se siguen de largo.
+    """
+    from math import ceil
+
+    from app.core.config import get_refresh_config
+
+    cfg = get_refresh_config()
+    now = datetime.now(timezone.utc)
+
+    elapsed_days: Optional[float] = None
+    age_hours: Optional[float] = None
+    if prev_completed_at is not None:
+        ref = prev_completed_at
+        if ref.tzinfo is None:
+            ref = ref.replace(tzinfo=timezone.utc)
+        elapsed_days = (now - ref).total_seconds() / 86400.0
+        age_hours = round(elapsed_days * 24.0, 1)
+
+    churn_raw: Optional[float] = None
+    if listings_found > 0:
+        churn_raw = round((new_count + changed_count) / listings_found, 4)
+
+    is_baseline = queue_priority == "full_scan_baseline"
+    churn_daily: Optional[float] = None
+    if not is_baseline and elapsed_days is not None:
+        churn_daily = seg_repo.compute_churn_daily(
+            new_count, changed_count, listings_found, elapsed_days
+        )
+
+    total_count = int(segment.total_count or 0)
+    estimated_pages = max(ceil(total_count / max(cfg.postings_per_page, 1)), 1)
+
+    try:
+        async with factory() as sess:
+            async with sess.begin():
+                churn_state: dict = {}
+                if churn_daily is not None:
+                    churn_state = await seg_repo.update_churn_ewma(
+                        sess, segment.id, churn_daily, cfg.churn_ewma_alpha
+                    )
+                prev_total = await seg_repo.get_last_history_total_count(sess, segment.id)
+                await seg_repo.record_scan_history(
+                    sess,
+                    segment_id=segment.id,
+                    operation_key=segment.operation_key,
+                    province_key=segment.province_key,
+                    price_min=segment.price_min,
+                    price_max=segment.price_max,
+                    surface_min=segment.surface_min,
+                    surface_max=segment.surface_max,
+                    total_count=total_count,
+                    delta_total_count=(total_count - prev_total) if prev_total is not None else None,
+                    tier=_tier_from_priority(queue_priority),
+                    priority=queue_priority,
+                    age_hours=age_hours,
+                    estimated_pages=estimated_pages,
+                    batch_id=_parse_batch_id(queue_reason),
+                    new_count=new_count,
+                    changed_count=changed_count,
+                    listings_found=listings_found,
+                    churn_raw=churn_raw,
+                    churn_daily=round(churn_daily, 4) if churn_daily is not None else None,
+                    # Sin observación nueva, registra el estado vigente del segmento
+                    churn_ewma=churn_state.get("churn_ewma", segment.churn_ewma),
+                    churn_samples_count=churn_state.get(
+                        "churn_samples_count", segment.churn_samples_count
+                    ),
+                )
+        if churn_daily is not None:
+            log.info(
+                "scan_outcome: seg_id=%d churn_daily=%.4f ewma=%.4f samples=%d (found=%d new=%d changed=%d)",
+                segment.id, churn_daily, churn_state.get("churn_ewma", 0.0),
+                churn_state.get("churn_samples_count", 0),
+                listings_found, new_count, changed_count,
+            )
+    except Exception as exc:
+        log.error("scan_outcome: error registrando churn/history seg_id=%d — %s", segment.id, exc)
+
 # ── Cancellation ──────────────────────────────────────────────────────────────
 
 # Niveles: 0 = ninguno, 1 = stopping (termina segmento actual), 2 = force_stop (aborta segmento)
@@ -181,6 +298,20 @@ async def run_segment_discovery(
         async with session.begin():
             new_runs = await seg_repo.sync_pending_scan_queue(session, portal)
 
+    # Herencia de churn en splits: hojas nuevas sin evidencia propia reciben un
+    # prior débil del segmento histórico que las contiene (ver repo). Los nodos
+    # intermedios no se persisten, por eso se resuelve por contención de boundaries.
+    inherited_count = 0
+    from app.core.config import get_refresh_config
+    refresh_cfg = get_refresh_config()
+    if refresh_cfg.inherit_churn_on_split:
+        async with factory() as session:
+            async with session.begin():
+                inherited = await seg_repo.inherit_churn_from_parents(
+                    session, portal, refresh_cfg.inherited_churn_samples_cap
+                )
+                inherited_count = len(inherited)
+
     async with factory() as session:
         async with session.begin():
             invalidated = await seg_repo.invalidate_changed_segments_after_discovery(session, portal)
@@ -206,10 +337,15 @@ async def run_segment_discovery(
     )
 
     log.info(
-        "discovery_service: segment_discovery run_id=%d status=%s leaves=%d oversized=%d new_runs=%d invalidated=%d",
-        run_id, final_status, leaf_count, oversized_count, new_runs, invalidated["invalidated"],
+        "discovery_service: segment_discovery run_id=%d status=%s leaves=%d oversized=%d new_runs=%d"
+        " invalidated=%d churn_inherited=%d",
+        run_id, final_status, leaf_count, oversized_count, new_runs,
+        invalidated["invalidated"], inherited_count,
     )
-    return {"run_id": run_id, "status": final_status, **stats, "new_runs": new_runs, "invalidated": invalidated}
+    return {
+        "run_id": run_id, "status": final_status, **stats,
+        "new_runs": new_runs, "invalidated": invalidated, "churn_inherited": inherited_count,
+    }
 
 
 # ── Fase 2a: URL Discovery con ventana horaria y resumabilidad ────────────────
@@ -274,6 +410,13 @@ async def run_url_discovery_window(
     async def process_segment(run) -> str:
         """Procesa un segmento completo. Devuelve 'complete' | 'stopped_early' | 'failed'."""
         nonlocal window_error_count
+
+        # Referencia temporal del scan anterior (scan_queue.completed_at), capturada
+        # ANTES de mark_complete: es la base del churn diario del scan actual.
+        prev_completed_at = run.completed_at
+        queue_priority = run.priority
+        queue_reason = run.reason
+
         async with factory() as session:
             async with session.begin():
                 await run_repo.mark_started(session, run.id)
@@ -374,6 +517,16 @@ async def run_url_discovery_window(
                         changed_count=changed_count,
                         **seg_metrics,
                     )
+            await _record_scan_outcome(
+                factory,
+                segment=run.segment,
+                queue_priority=queue_priority,
+                queue_reason=queue_reason,
+                prev_completed_at=prev_completed_at,
+                listings_found=total_found,
+                new_count=new_count,
+                changed_count=changed_count,
+            )
             log.info(
                 "url_discovery_window: segmento %d completo — %d publicaciones (%d páginas)",
                 run.segment_id, total_found, pages_ok,
@@ -560,8 +713,10 @@ async def run_refresh_monitor(
 ) -> dict:
     """
     Reencola en la scan_queue las hojas activas 'complete' vencidas según su tier
-    (hot/warm/cold), priorizando volatilidad histórica + volumen. No escanea: solo
-    decide qué volver a poner en 'pending' para que url_discovery lo reprocese.
+    (hot/warm/cold/unknown), priorizando churn observado (señal principal) +
+    volatilidad de total_count + volumen. No escanea: solo decide qué volver a
+    poner en 'pending' para que url_discovery lo reprocese. El score decide
+    urgencia, no permiso: los gaps por tier son máximos de frescura de negocio.
     """
     from app.core.config import get_refresh_config
 
@@ -581,7 +736,11 @@ async def run_refresh_monitor(
                 "portal": portal,
                 "mode": mode,
                 "max_segments_per_cycle": cfg.max_segments_per_cycle,
-                "gap_hours": {"hot": cfg.gap_hours_hot, "warm": cfg.gap_hours_warm, "cold": cfg.gap_hours_cold},
+                "max_pages_per_cycle": cfg.max_pages_per_cycle,
+                "gap_hours": {
+                    "hot": cfg.gap_hours_hot, "warm": cfg.gap_hours_warm,
+                    "cold": cfg.gap_hours_cold, "unknown": cfg.gap_hours_unknown,
+                },
             },
             mode=mode,
         )
@@ -622,3 +781,89 @@ async def run_refresh_monitor(
         run_id, final_status, len(items), enqueued, enq.get("by_tier", {}),
     )
     return {"run_id": run_id, "status": final_status, **stats}
+
+
+# ── Full Scan (salida en vivo): baseline + compare ────────────────────────────
+
+
+async def run_full_scan(
+    scan_mode: str,
+    batch_id: str,
+    portal: str = "zonaprop",
+    source_code: str = "zonaprop",
+    mode: str = "manual",
+) -> dict:
+    """
+    Reencola un ciclo de full scan (baseline o compare) para construir el baseline
+    de churn de la salida en vivo. No escanea ni crea pipeline paralelo: deja los
+    segmentos en 'pending' con priority full_scan_<mode> para que url_discovery
+    los consuma por el flujo normal.
+
+    Doble gate: FULL_SCAN_ENABLED=true Y batch_id explícito. Idempotente y
+    reanudable por batch_id (estado durable en scan_history); correr
+    repetidamente hasta que 'remaining' llegue a 0, luego pasar a compare.
+    """
+    from app.core.config import get_full_scan_config
+
+    cfg = get_full_scan_config()
+    if not cfg.enabled:
+        return {"error": "full scan deshabilitado (FULL_SCAN_ENABLED=false)"}
+    if scan_mode not in ("baseline", "compare"):
+        return {"error": f"scan_mode inválido: '{scan_mode}' (esperado: baseline | compare)"}
+    if not batch_id:
+        return {"error": "batch_id requerido: el full scan debe ser rastreable por batch"}
+
+    factory = get_async_session_factory()
+
+    async with factory() as session:
+        source = await sources_repo.get_by_code(session, source_code)
+        if source is None:
+            return {"error": f"source '{source_code}' not found"}
+        source_id = source.id
+        run = await runs_repo.start(
+            session,
+            run_type="full_scan",
+            source_id=source_id,
+            params={
+                "portal": portal,
+                "scan_mode": scan_mode,
+                "batch_id": batch_id,
+                "max_pages_per_cycle": cfg.max_pages_per_cycle,
+            },
+            mode=mode,
+        )
+        await session.commit()
+        run_id = run.id
+
+    stats: dict = {}
+    try:
+        async with factory() as session:
+            async with session.begin():
+                stats = await run_repo.enqueue_full_scan(
+                    session,
+                    portal=portal,
+                    scan_mode=scan_mode,
+                    batch_id=batch_id,
+                    max_pages_per_cycle=cfg.max_pages_per_cycle,
+                    postings_per_page=cfg.postings_per_page,
+                )
+        final_status = "success"
+    except Exception as exc:
+        log.error("discovery_service: full_scan falló — %s", exc)
+        final_status = "failed"
+        from app.core.alerts import dispatch
+        await dispatch(
+            "run_failed", "critical",
+            f"full_scan {scan_mode} falló: {exc}",
+            {"run_id": run_id, "portal": portal, "batch_id": batch_id},
+        )
+
+    async with factory() as session:
+        await runs_repo.finish(session, run_id, status=final_status, stats=stats)
+        await session.commit()
+
+    log.info(
+        "discovery_service: full_scan run_id=%d status=%s scan_mode=%s batch_id=%s stats=%s",
+        run_id, final_status, scan_mode, batch_id, stats,
+    )
+    return {"run_id": run_id, "status": final_status, "scan_mode": scan_mode, "batch_id": batch_id, **stats}

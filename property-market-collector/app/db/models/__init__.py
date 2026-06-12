@@ -17,7 +17,7 @@ from .listings import ListingEntity, ListingSnapshot
 from .runs import CollectionRun, CollectionError
 from .location_normalization import ListingLocationNormalization
 from .market_facts import ListingMarketFacts
-from .zonaprop.segments import ZonapropSegment, ZonapropSegmentSnapshot
+from .zonaprop.segments import ZonapropSegment, ZonapropSegmentSnapshot, ZonapropSegmentScanHistory
 from .zonaprop.scan_queue import ZonapropSegmentScanQueue
 
 __all__ = [
@@ -31,5 +31,6 @@ __all__ = [
     "ListingMarketFacts",
     "ZonapropSegment",
     "ZonapropSegmentSnapshot",
+    "ZonapropSegmentScanHistory",
     "ZonapropSegmentScanQueue",
 ]

@@ -96,21 +96,38 @@ curl -X POST http://localhost:8200/market/facts/search \
 
 ---
 
-## Discovery pipeline (3 fases)
+## Discovery pipeline
 
 ```
 Fase 1 — segment_discovery (sábados 10:00 AR)
   └─ Árbol adaptativo precio × superficie por operación × provincia
-  └─ Al finalizar: sync_pending_scan_queue() + invalidate_changed_segments_after_discovery()
+  └─ Al finalizar: sync_pending_scan_queue() + inherit_churn_from_parents()
+     + invalidate_changed_segments_after_discovery()
 
 Fase 2 — url_discovery_window (L-V 06:00-18:30 AR, domingos 10:00-16:00 AR)
-  └─ Consume zonaprop_segment_scan_queue en estado pending
+  └─ Consume zonaprop_segment_scan_queue en estado pending, por priority:
+     high > refresh_hot > full_scan_compare > full_scan_baseline > normal
+     > refresh_unknown > refresh_warm > refresh_cold
   └─ Pagina la API de Zonaprop por segmento → upsert en listing_entities
+  └─ Al completar segmento: churn observado → zonaprop_segments.churn_ewma
+     + fila append-only en zonaprop_segment_scan_history
   └─ Resumable: runs colgados se devuelven a pending al arrancar
 
-Fase 3 — incremental_monitor (bajo demanda)
-  └─ Compara total_count actual vs snapshot anterior
-  └─ Rescanea segmentos que cambiaron
+refresh_monitor (schedulado) — Etapa B
+  └─ Reencola hojas 'complete' vencidas por tier (hot 24h / warm 72h /
+     cold 168h máx. de negocio / unknown 72h exploración)
+  └─ Score v2: churn observado (principal) + count_volatility + volumen
+  └─ Presupuesto: REFRESH_MAX_PAGES_PER_CYCLE (páginas estimadas) +
+     REFRESH_MAX_SEGMENTS_PER_CYCLE (tope secundario)
+  └─ El score decide urgencia, nunca si se refresca
+
+full_scan (manual, salida en vivo) — jobs/zonaprop_full_scan.py
+  └─ --mode baseline|compare --batch-id <id>; doble gate FULL_SCAN_ENABLED + batch_id
+  └─ baseline construye la base comparable (no alimenta churn);
+     compare genera el primer churn válido del parque
+
+incremental_monitor — DEPRECATED (solo manual; criterio cubierto por
+invalidación estructural + refresh por churn; no schedular)
 ```
 
 ---

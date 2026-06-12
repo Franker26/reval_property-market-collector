@@ -2,12 +2,14 @@
 """
 jobs/zonaprop_refresh_monitor.py
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Refresh rotativo priorizado de segmentos Zonaprop (Etapa A).
+Refresh rotativo priorizado de segmentos Zonaprop (Etapa B — churn observado).
 
 Reencola en la scan_queue las hojas activas 'complete' vencidas según su tier
-(hot/warm/cold), priorizando volatilidad histórica + volumen. No escanea: deja los
-segmentos en 'pending' para que url_discovery los reprocese y detecte cambios
-individuales vía upsert_batch.
+(hot/warm/cold/unknown), priorizando churn observado (señal principal) +
+volatilidad de total_count + volumen. El score decide urgencia, nunca si se
+refresca: los gaps por tier son máximos de frescura de negocio. No escanea:
+deja los segmentos en 'pending' para que url_discovery los reprocese y detecte
+cambios individuales vía upsert_batch.
 
 Uso:
     python jobs/zonaprop_refresh_monitor.py

@@ -1,6 +1,9 @@
 """
 discovery.engine.incremental_monitor
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+DEPRECATED (Etapa B): criterio cubierto por la invalidación estructural
+post-discovery + el refresh rotativo por churn observado. Solo uso manual.
+
 Monitoreo incremental de segmentos. Portal-agnostic.
 
 Consulta el total_count actual de cada segmento hoja,
