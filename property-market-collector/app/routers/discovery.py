@@ -85,6 +85,15 @@ async def _bg_incremental_monitor(
         log.error("bg incremental_monitor error: %s", exc)
 
 
+async def _bg_refresh_monitor() -> None:
+    try:
+        from app.services.discovery_service import run_refresh_monitor
+        result = await run_refresh_monitor(mode="manual")
+        log.info("bg refresh_monitor finalizado: %s", result)
+    except Exception as exc:
+        log.error("bg refresh_monitor error: %s", exc)
+
+
 async def _bg_build_location_normalization() -> None:
     try:
         from jobs.build_location_normalization import run
@@ -165,6 +174,28 @@ async def trigger_incremental_monitor(
         "status": "started",
         "message": "Incremental monitor iniciado en background.",
         "monitor_url": "GET /runs?run_type=incremental_monitor",
+    }
+
+
+@router.post("/refresh-monitor")
+async def trigger_refresh_monitor(background_tasks: BackgroundTasks):
+    """
+    Refresh rotativo: reencola hojas activas 'complete' vencidas (por volatilidad + volumen)
+    para que url_discovery las reprocese y detecte cambios individuales.
+
+    Requiere que el scheduler 'refresh_monitor' esté pausado (si está habilitado).
+    """
+    if not _all_paused("refresh_monitor"):
+        raise HTTPException(
+            409,
+            "El scheduler 'refresh_monitor' está activo. "
+            "Pausalo antes de triggerear manualmente.",
+        )
+    background_tasks.add_task(_bg_refresh_monitor)
+    return {
+        "status": "started",
+        "message": "Refresh monitor iniciado en background. Reencola segmentos vencidos según tier.",
+        "monitor_url": "GET /runs?run_type=refresh_monitor",
     }
 
 

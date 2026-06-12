@@ -516,3 +516,77 @@ async def run_incremental_monitor(
         run_id, final_status, agg.get("segments_checked", 0), agg.get("listings_found", 0), total_written,
     )
     return {"run_id": run_id, "status": final_status, **stats}
+
+
+# ── Refresh Monitor: reencola segmentos completos por volatilidad + volumen ────
+
+
+async def run_refresh_monitor(
+    portal: str = "zonaprop",
+    source_code: str = "zonaprop",
+    mode: str = "manual",
+) -> dict:
+    """
+    Reencola en la scan_queue las hojas activas 'complete' vencidas según su tier
+    (hot/warm/cold), priorizando volatilidad histórica + volumen. No escanea: solo
+    decide qué volver a poner en 'pending' para que url_discovery lo reprocese.
+    """
+    from app.core.config import get_refresh_config
+
+    cfg = get_refresh_config()
+    factory = get_async_session_factory()
+
+    async with factory() as session:
+        source = await sources_repo.get_by_code(session, source_code)
+        if source is None:
+            return {"error": f"source '{source_code}' not found"}
+        source_id = source.id
+        run = await runs_repo.start(
+            session,
+            run_type="refresh_monitor",
+            source_id=source_id,
+            params={
+                "portal": portal,
+                "mode": mode,
+                "max_segments_per_cycle": cfg.max_segments_per_cycle,
+                "gap_hours": {"hot": cfg.gap_hours_hot, "warm": cfg.gap_hours_warm, "cold": cfg.gap_hours_cold},
+            },
+            mode=mode,
+        )
+        await session.commit()
+        run_id = run.id
+
+    items: list[dict] = []
+    enq: dict = {"enqueued": 0, "by_tier": {}}
+    try:
+        async with factory() as session:
+            async with session.begin():
+                items = await seg_repo.select_segments_due_for_refresh(session, portal, cfg)
+                enq = await run_repo.enqueue_refresh(session, items)
+        final_status = "success"
+    except Exception as exc:
+        log.error("discovery_service: refresh_monitor falló — %s", exc)
+        final_status = "failed"
+        from app.core.alerts import dispatch
+        await dispatch(
+            "run_failed", "critical",
+            f"refresh_monitor falló: {exc}",
+            {"run_id": run_id, "portal": portal},
+        )
+
+    enqueued = enq.get("enqueued", 0)
+    stats = {
+        "selected": len(items),
+        "enqueued": enqueued,
+        "skipped": len(items) - enqueued,
+        "by_tier": enq.get("by_tier", {}),
+    }
+    async with factory() as session:
+        await runs_repo.finish(session, run_id, status=final_status, stats=stats)
+        await session.commit()
+
+    log.info(
+        "discovery_service: refresh_monitor run_id=%d status=%s selected=%d enqueued=%d by_tier=%s",
+        run_id, final_status, len(items), enqueued, enq.get("by_tier", {}),
+    )
+    return {"run_id": run_id, "status": final_status, **stats}

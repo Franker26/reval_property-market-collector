@@ -110,6 +110,20 @@ async def _job_build_market_facts() -> None:
         log.error("scheduler: error en build_market_facts — %s", exc)
 
 
+async def _job_refresh_monitor() -> None:
+    from app.core.config import get_refresh_config
+    if not get_refresh_config().enabled:
+        log.info("scheduler: refresh_monitor deshabilitado (REFRESH_MONITOR_ENABLED=false) — saltando")
+        return
+    log.info("scheduler: refresh_monitor iniciando")
+    try:
+        from app.services.discovery_service import run_refresh_monitor
+        result = await run_refresh_monitor(mode="scheduled")
+        log.info("scheduler: refresh_monitor finalizado — %s", result)
+    except Exception as exc:
+        log.error("scheduler: error en refresh_monitor — %s", exc)
+
+
 def get_scheduler() -> AsyncIOScheduler:
     global _scheduler
     if _scheduler is None:
@@ -166,10 +180,27 @@ def get_scheduler() -> AsyncIOScheduler:
             coalesce=True,
         )
 
+        from app.core.config import get_refresh_config
+        refresh_enabled = get_refresh_config().enabled
+        if refresh_enabled:
+            # Varias veces/día dentro de la ventana de url_discovery (L-V 06:00–18:30 AR),
+            # para que haya consumidores tras el reencolado.
+            _scheduler.add_job(
+                _job_refresh_monitor,
+                trigger=CronTrigger(day_of_week="mon-sun", hour="7,11,15", minute=15,
+                                    timezone=settings.collector_timezone),
+                id="refresh_monitor",
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+            )
+
         log.info(
-            "scheduler: 5 jobs configurados"
+            "scheduler: %d jobs configurados"
             " (weekly_segment_discovery, weekday_url_discovery, sunday_url_discovery,"
-            " build_location_normalization_6h, build_market_facts_6h)"
+            " build_location_normalization_6h, build_market_facts_6h%s)",
+            6 if refresh_enabled else 5,
+            ", refresh_monitor" if refresh_enabled else "",
         )
 
     return _scheduler
