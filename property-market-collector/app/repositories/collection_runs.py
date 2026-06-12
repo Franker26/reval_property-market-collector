@@ -1,7 +1,7 @@
 """Repositorio para collection_runs."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import select, update
@@ -35,11 +35,14 @@ async def finish(
     status: str,
     stats: Optional[dict] = None,
 ) -> None:
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     run = await session.get(CollectionRun, run_id)
     if run is None:
         return
-    duration = (now - run.started_at.replace(tzinfo=None)).total_seconds() if run.started_at else None
+    started = run.started_at
+    if started is not None and started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    duration = (now - started).total_seconds() if started else None
     await session.execute(
         update(CollectionRun)
         .where(CollectionRun.id == run_id)
@@ -57,7 +60,7 @@ async def reset_stale_running_runs(session: AsyncSession) -> int:
     result = await session.execute(
         update(CollectionRun)
         .where(CollectionRun.status.in_(["running", "stopping", "force_stopping"]))
-        .values(status="failed", finished_at=datetime.utcnow())
+        .values(status="failed", finished_at=datetime.now(timezone.utc))
     )
     return result.rowcount  # type: ignore[return-value]
 

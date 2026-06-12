@@ -27,7 +27,7 @@ import asyncio
 import logging
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -102,7 +102,7 @@ async def _run(args: argparse.Namespace) -> int:
         log.warning("No hay segmentos hoja activos para los filtros dados.")
         return 1
 
-    run_started_at = datetime.utcnow()
+    run_started_at = datetime.now(timezone.utc)
 
     log.info("=" * 70)
     log.info("Zonaprop URL discovery — iniciando")
